@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+
+# Virtualenvs
+.venv/
+venv/
+
+# Secrets / local data
+.env
+.env.local
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

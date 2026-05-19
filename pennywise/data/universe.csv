@@ -1,0 +1,35 @@
+symbol,sector,market_cap_bucket
+HDFCBANK,Financial Services,large_cap
+ICICIBANK,Financial Services,large_cap
+SBIN,Financial Services,large_cap
+BAJFINANCE,Financial Services,large_cap
+TCS,Information Technology,large_cap
+INFY,Information Technology,large_cap
+WIPRO,Information Technology,large_cap
+LTIM,Information Technology,large_cap
+HINDUNILVR,Consumer Goods,large_cap
+ITC,Consumer Goods,large_cap
+NESTLEIND,Consumer Goods,large_cap
+DABUR,Consumer Goods,large_cap
+SUNPHARMA,Healthcare,large_cap
+DIVISLAB,Healthcare,large_cap
+APOLLOHOSP,Healthcare,large_cap
+LUPIN,Healthcare,mid_cap
+RELIANCE,Energy,large_cap
+ONGC,Energy,large_cap
+IOC,Energy,large_cap
+GAIL,Energy,large_cap
+LT,Industrials,large_cap
+SIEMENS,Industrials,large_cap
+ABB,Industrials,large_cap
+CUMMINSIND,Industrials,mid_cap
+PERSISTENT,Information Technology,mid_cap
+COFORGE,Information Technology,mid_cap
+TATAELXSI,Information Technology,mid_cap
+POLYCAB,Industrials,mid_cap
+JUBLFOOD,Consumer Goods,mid_cap
+ZYDUSLIFE,Healthcare,mid_cap
+KEI,Industrials,small_cap
+CAMPUS,Consumer Goods,small_cap
+RAINBOW,Healthcare,small_cap
+TANLA,Information Technology,small_cap
