@@ -96,7 +96,7 @@ def _receive_oauth_code(port: int, timeout: int = 120) -> str:
                 result["error"] = qs.get("error", ["unknown"])[0]
                 body = f"<html><body><h2>Login failed: {result['error']}</h2></body></html>".encode()
             else:
-                body = b"<html><body><p>Waiting…</p></body></html>"
+                body = b"<html><body><p>Waiting...</p></body></html>"
 
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
