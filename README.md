@@ -111,11 +111,13 @@ uv run uvicorn pennywise.api.app:create_app --factory --reload
 
 ## CLI commands
 
+Commands must be run in order on a fresh install: sign in with Google first, then link Groww. All portfolio commands require both.
+
 | Command | What it does |
 |---|---|
-| `pennywise login google` | Sign in to PennyWise with your Google account. Opens your browser, receives the OAuth callback on `localhost:18765`, and stores your identity in `~/.pennywise/credentials.json`. Run this first on a fresh install. |
-| `pennywise login groww` | Link your Groww account. Opens `groww.in/trade-api`, prompts for your API credentials, and stores them. Two auth methods — see below. |
-| `pennywise snapshot` | Fetch Groww holdings + LTP, tag every ticker with sector / industry / market cap from Screener, persist to `~/.pennywise/snapshot.json`. | 
+| `pennywise login google` | **Step 1.** Sign in to PennyWise with your Google account. Opens your browser, receives the OAuth callback on `localhost:18765`, and stores your identity in `~/.pennywise/credentials.json`. |
+| `pennywise login groww` | **Step 2.** Link your Groww account. Requires Google login first. Prompts for API credentials and stores them. Two auth methods — see below. |
+| `pennywise snapshot` | Fetch Groww holdings + LTP, tag every ticker with sector / industry / market cap from Screener, persist to `~/.pennywise/snapshot.json`. |
 | `pennywise risk` | Read snapshot, compute HHI / sector mix / market-cap mix / gaps, generate LLM commentary. |
 | `pennywise recommend` | Run the full LangGraph workflow: candidate pick → fundamentals → technicals → news → synthesis → critique → finalize. |
 | `pennywise chat` | Interactive REPL. Claude has tool access to your portfolio. |
@@ -250,7 +252,7 @@ Refresh the market-cap floors biannually from
 uv run pytest -q
 ```
 
-72 tests, all offline — mocked HTTP responses and inline HTML fixtures,
+76 tests, all offline — mocked HTTP responses and inline HTML fixtures,
 no live calls.
 
 ## Project layout
