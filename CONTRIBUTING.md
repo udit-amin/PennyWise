@@ -6,7 +6,7 @@ a few conventions worth knowing before opening a PR.
 ## Setup
 
 ```bash
-git clone https://github.com/<you>/PennyWise.git
+git clone https://github.com/udit-amin/PennyWise.git
 cd PennyWise
 uv sync
 cp .env.example .env  # fill in keys; only ANTHROPIC_API_KEY is needed for tests

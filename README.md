@@ -54,8 +54,10 @@ Two design choices worth calling out:
 
 ## Quickstart
 
+### CLI (local use)
+
 ```bash
-git clone https://github.com/<you>/PennyWise.git
+git clone https://github.com/udit-amin/PennyWise.git
 cd PennyWise
 uv sync
 cp .env.example .env       # then fill in GROWW_API_TOKEN + ANTHROPIC_API_KEY
@@ -63,7 +65,28 @@ uv run pennywise snapshot  # ~30-60s the first time
 uv run pennywise chat      # ask anything
 ```
 
-## Commands
+### API + Docker (for a frontend)
+
+The FastAPI backend exposes the same tools over REST + WebSocket, with
+Google OAuth and DynamoDB-backed session persistence.
+
+```bash
+cp .env.example .env       # fill in ANTHROPIC_API_KEY, GROWW_API_TOKEN,
+                           # GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+docker-compose up          # starts API on :8000, DynamoDB-local on :8042
+```
+
+API docs are auto-generated at `http://localhost:8000/docs` once the
+server is running.
+
+To run the API without Docker:
+
+```bash
+uv sync
+uv run uvicorn pennywise.api.app:create_app --factory --reload
+```
+
+## CLI commands
 
 | Command | What it does | Network |
 |---|---|---|
@@ -121,23 +144,25 @@ In-REPL commands:
 /quit       exit (already saved)
 ```
 
-Example session:
+## API endpoints
 
-```
-you: what's my biggest risk?
-pennywise: Concentration in PSUs. RECLTD (12.3%), PFC (8.1%), and
-BANKBARODA (6.4%) together make up 26.8% — all rate-sensitive PSU
-financials. If RBI cuts more slowly than the market expects, these
-re-rate together.
+All API routes require a JWT from the Google OAuth flow (except `/health`).
 
-you: should I trim RECLTD?
-pennywise: Yes. It's your top holding at 12.3% (above the 10% top-name
-flag), RSI is 35.4 (oversold but not extreme), price is below SMA50 and
-SMA200, and MACD has crossed negative. Trim to 8-9% and redeploy into
-the IT gap (TANLA or LTIM look strongest among the candidates).
-
-you: /quit
-```
+| Method | Path | Description |
+|---|---|---|
+| GET | `/health` | Health check |
+| GET | `/api/auth/google/url` | Get Google OAuth URL |
+| POST | `/api/auth/google/callback` | Exchange auth code for JWT |
+| GET | `/api/auth/me` | Current user info |
+| POST | `/api/auth/groww-credentials` | Store Groww API credentials |
+| GET | `/api/portfolio/holdings` | User's holdings with sector + P&L |
+| GET | `/api/portfolio/risk` | Concentration / risk metrics |
+| GET | `/api/tools/technicals/{symbol}` | Live technical indicators |
+| GET | `/api/tools/fundamentals/{symbol}` | Live fundamentals from Screener |
+| GET | `/api/tools/news/{symbol}` | Recent Moneycontrol headlines |
+| POST | `/api/recommendations` | Start recommendation workflow (async job) |
+| GET | `/api/recommendations/{job_id}` | Poll job status |
+| WebSocket | `/api/chat/ws?token=<jwt>` | Streaming chat with tool calls |
 
 ## MCP integration (optional)
 
@@ -176,10 +201,16 @@ All knobs live in `.env`:
 | `GROWW_API_KEY` / `GROWW_API_SECRET` | — | Alternative: PennyWise mints the daily token from these. |
 | `ANTHROPIC_API_KEY` | — | Required for `risk`, `recommend`, `chat`. |
 | `PENNYWISE_LLM_MODEL` | `claude-opus-4-7` | Claude model id. Sonnet-class models also work and cost ~3× less. |
+| `PENNYWISE_REASONING_EFFORT` | `medium` | Adaptive-thinking effort for Synthesizer / Critic (`low` / `medium` / `high`). |
 | `PENNYWISE_HHI_FLAG` | `0.25` | HHI threshold for the "concentrated" flag. |
 | `PENNYWISE_TOP_NAME_FLAG` | `0.20` | Single-name weight that triggers a TRIM suggestion. |
 | `PENNYWISE_LARGE_CAP_FLOOR_CR` | `80000` | AMFI top-100 floor (H1 2025). |
 | `PENNYWISE_MID_CAP_FLOOR_CR` | `28000` | AMFI top-250 floor (H1 2025). |
+| `GOOGLE_CLIENT_ID` | — | Google OAuth client ID (API backend only). |
+| `GOOGLE_CLIENT_SECRET` | — | Google OAuth client secret (API backend only). |
+| `JWT_SECRET` | `pennywise-dev-secret-change-me` | JWT signing secret (API backend only). |
+| `DYNAMODB_ENDPOINT` | — | DynamoDB-local URL; leave unset for real AWS. |
+| `CORS_ORIGINS` | `localhost:3000,5173` | Comma-separated allowed origins. |
 
 Refresh the market-cap floors biannually from
 [amfiindia.com → Categorization of Stocks][amfi].
@@ -192,9 +223,9 @@ Refresh the market-cap floors biannually from
 uv run pytest -q
 ```
 
-50 tests, all offline — recorded HTTP fixtures, no live calls. Adding a
-new connector? Add a fixture under `tests/fixtures/` and a test that
-asserts the parser handles real responses.
+56 tests, all offline — mocked HTTP responses and inline HTML fixtures,
+no live calls. Adding a new connector? Add a test that asserts the
+parser handles real response shapes.
 
 ## Project layout
 
@@ -213,6 +244,14 @@ pennywise/
 │   ├── strategy_critic.py
 │   └── ...
 ├── graph/                 # LangGraph state + workflow wiring
+├── api/                   # FastAPI backend
+│   ├── app.py             # application factory
+│   ├── auth.py            # Google OAuth + JWT
+│   ├── db.py              # DynamoDB persistence
+│   ├── streaming.py       # WebSocket chat adapter
+│   ├── background.py      # thread-pool job runner
+│   ├── models.py          # Pydantic request/response schemas
+│   └── routes/            # auth, portfolio, tools, chat, recommendations
 ├── mcp/                   # FastMCP server exposing tools
 └── data/
     └── universe.csv       # static Nifty-universe candidate pool
@@ -222,8 +261,8 @@ pennywise/
 
 - [ ] Live AMFI category lookup instead of threshold-based mcap bucketing.
 - [ ] XIRR + dividend history (Groww publishes both via the portfolio API).
-- [ ] Save chat transcripts to `~/.pennywise/chats/` for replay.
 - [ ] Optional Streamlit dashboard for the chat surface.
+- [ ] Per-user snapshot persistence in the API (currently uses the shared CLI snapshot).
 
 ## License
 
