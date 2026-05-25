@@ -97,23 +97,44 @@ def login_groww(console: Console) -> None:
             f"[dim]Stored in {creds_mod.credentials_path()}[/dim]\n"
         )
     else:
-        totp_code = Prompt.ask("Current 6-digit TOTP code").strip()
-        if not totp_code or not totp_code.isdigit() or len(totp_code) != 6:
-            console.print("[red]TOTP code must be exactly 6 digits.[/red]")
+        console.print(
+            "\n[dim]Enter the TOTP secret Groww showed you — the base32 string\n"
+            "(e.g. GJ4AHT26CZVXPERD7M7XGAOOQK3LE5NN) that appears alongside\n"
+            "the QR code. PennyWise generates the 6-digit codes automatically.[/dim]\n"
+        )
+        totp_secret = Prompt.ask("TOTP secret (base32)").strip().upper().replace(" ", "")
+        if not totp_secret:
+            console.print("[red]TOTP secret is required.[/red]")
             raise SystemExit(1)
-        console.print("\n[dim]Validating TOTP with Groww…[/dim]")
+
+        # Validate the secret is decodable before hitting Groww
+        try:
+            import base64
+            base64.b32decode(totp_secret)
+        except Exception:
+            console.print(
+                "[red]That doesn't look like a valid base32 secret. "
+                "Check you copied the full string from Groww.[/red]"
+            )
+            raise SystemExit(1)
+
+        # Generate current code and exchange immediately
+        from pennywise.credentials import _totp
+        totp_code = _totp(totp_secret)
+        console.print(f"\n[dim]Generated TOTP code: {totp_code} — validating with Groww…[/dim]")
         try:
             access_token = exchange_for_access_token(api_key, totp_code=totp_code)
         except Exception as exc:
             console.print(f"[red]Validation failed: {exc}[/red]")
             raise SystemExit(1)
         creds_mod.set_groww_credentials(
-            api_key, None, access_token=access_token, auth_method="totp"
+            api_key, None, access_token=access_token,
+            auth_method="totp", totp_secret=totp_secret,
         )
         console.print(
             "\n[bold green]Groww credentials saved (TOTP).[/bold green]\n"
-            "[yellow]Remember:[/yellow] TOTP tokens expire at 6 AM IST. "
-            "Run [bold]pennywise login groww[/bold] again each morning.\n"
+            "PennyWise will auto-generate TOTP codes from the stored secret —\n"
+            "no daily re-login needed.\n"
             f"[dim]Stored in {creds_mod.credentials_path()}[/dim]\n"
         )
 

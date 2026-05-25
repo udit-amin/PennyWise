@@ -19,16 +19,32 @@ TOTP vs checksum:
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import stat
+import struct
+import time as _time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 
 class GrowwLoginRequired(RuntimeError):
-    """Raised when a TOTP-based Groww token has expired and cannot be silently refreshed."""
+    """Raised when stored Groww credentials are insufficient to refresh the token."""
+
+
+def _totp(secret_b32: str, *, step: int = 30, digits: int = 6) -> str:
+    """Generate a TOTP code from a base32 secret (RFC 6238, HMAC-SHA1)."""
+    key = base64.b32decode(secret_b32.upper().replace(" ", ""))
+    t = int(_time.time()) // step
+    msg = struct.pack(">Q", t)
+    digest = hmac.new(key, msg, hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    code = struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF
+    return str(code % (10**digits)).zfill(digits)
 
 
 def credentials_path() -> Path:
@@ -93,8 +109,9 @@ def get_groww_token() -> str | None:
 
     Priority:
       1. Cached token in credentials.json — if still fresh, return it.
-      2. Checksum auth: silently re-exchange using stored api_key + api_secret.
-      3. TOTP auth: raise GrowwLoginRequired (cannot refresh without a live code).
+      2. Checksum: silently re-exchange using stored api_key + api_secret.
+      3. TOTP: generate a live 6-digit code from the stored totp_secret and
+         exchange — fully automatic, no user input required.
       4. None — no credentials stored; caller falls back to env vars.
     """
     creds = load()
@@ -106,22 +123,25 @@ def get_groww_token() -> str | None:
     if not api_key:
         return None
 
+    from pennywise.connectors.groww import exchange_for_access_token
+
     auth_method = creds.get("groww_auth_method", "checksum")
 
     if auth_method == "totp":
-        raise GrowwLoginRequired(
-            "Groww token has expired and cannot be refreshed automatically "
-            "(TOTP codes rotate every 30 s).\n"
-            "Run:  pennywise login groww"
-        )
+        totp_secret = creds.get("groww_totp_secret")
+        if not totp_secret:
+            raise GrowwLoginRequired(
+                "TOTP secret not found in credentials.\n"
+                "Run:  pennywise login groww"
+            )
+        code = _totp(totp_secret)
+        new_token = exchange_for_access_token(api_key, totp_code=code)
+    else:
+        api_secret = creds.get("groww_api_secret")
+        if not api_secret:
+            return None
+        new_token = exchange_for_access_token(api_key, api_secret)
 
-    # checksum — silent refresh
-    api_secret = creds.get("groww_api_secret")
-    if not api_secret:
-        return None
-
-    from pennywise.connectors.groww import exchange_for_access_token
-    new_token = exchange_for_access_token(api_key, api_secret)
     update(
         groww_access_token=new_token,
         groww_token_expires_at=_next_groww_expiry().isoformat(),
@@ -135,6 +155,7 @@ def set_groww_credentials(
     *,
     access_token: str,
     auth_method: str = "checksum",
+    totp_secret: str | None = None,
 ) -> None:
     """Persist Groww credentials and the freshly-minted access token."""
     fields: dict[str, Any] = {
@@ -145,6 +166,8 @@ def set_groww_credentials(
     }
     if api_secret is not None:
         fields["groww_api_secret"] = api_secret
+    if totp_secret is not None:
+        fields["groww_totp_secret"] = totp_secret
     update(**fields)
 
 

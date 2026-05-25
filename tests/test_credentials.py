@@ -104,15 +104,41 @@ def test_get_groww_token_refreshes_checksum_when_expired():
     assert creds_mod.load()["groww_access_token"] == "fresh_tok"
 
 
-def test_get_groww_token_raises_for_expired_totp():
+def test_get_groww_token_refreshes_totp_from_stored_secret():
+    """TOTP auto-refresh: generate code from stored secret, exchange silently."""
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    # GJ4AHT26CZVXPERD7M7XGAOOQK3LE5NN is a valid base32 string
+    creds_mod.save({
+        "groww_access_token": "stale",
+        "groww_token_expires_at": past,
+        "groww_api_key": "key",
+        "groww_auth_method": "totp",
+        "groww_totp_secret": "GJ4AHT26CZVXPERD7M7XGAOOQK3LE5NN",
+    })
+    with patch(
+        "pennywise.connectors.groww.exchange_for_access_token",
+        return_value="totp_tok",
+    ) as mock_ex:
+        token = creds_mod.get_groww_token()
+
+    assert token == "totp_tok"
+    # Must have been called with totp_code kwarg, not api_secret
+    _, kwargs = mock_ex.call_args
+    assert "totp_code" in kwargs
+    assert kwargs["totp_code"].isdigit() and len(kwargs["totp_code"]) == 6
+
+
+def test_get_groww_token_raises_when_totp_secret_missing():
+    """Without a stored secret, raise GrowwLoginRequired."""
     past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
     creds_mod.save({
         "groww_access_token": "stale",
         "groww_token_expires_at": past,
         "groww_api_key": "key",
         "groww_auth_method": "totp",
+        # no groww_totp_secret
     })
-    with pytest.raises(GrowwLoginRequired, match="pennywise login groww"):
+    with pytest.raises(GrowwLoginRequired):
         creds_mod.get_groww_token()
 
 
@@ -129,12 +155,22 @@ def test_set_groww_credentials_checksum_persists_all_fields():
     assert "groww_token_expires_at" in data
 
 
-def test_set_groww_credentials_totp_omits_secret():
-    creds_mod.set_groww_credentials("mykey", None, access_token="acc", auth_method="totp")
+def test_totp_generates_6_digit_code():
+    code = creds_mod._totp("GJ4AHT26CZVXPERD7M7XGAOOQK3LE5NN")
+    assert code.isdigit()
+    assert len(code) == 6
+
+
+def test_set_groww_credentials_totp_stores_secret():
+    creds_mod.set_groww_credentials(
+        "mykey", None, access_token="acc",
+        auth_method="totp", totp_secret="GJ4AHT26CZVXPERD7M7XGAOOQK3LE5NN",
+    )
     data = creds_mod.load()
     assert data["groww_api_key"] == "mykey"
     assert "groww_api_secret" not in data
     assert data["groww_auth_method"] == "totp"
+    assert data["groww_totp_secret"] == "GJ4AHT26CZVXPERD7M7XGAOOQK3LE5NN"
 
 
 # ── Google credentials ────────────────────────────────────────────────
