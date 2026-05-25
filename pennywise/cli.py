@@ -12,6 +12,8 @@ from pennywise.snapshot import Snapshot, snapshot_path
 from pennywise.tagging import build_snapshot
 
 app = typer.Typer(help="PennyWise — agentic stock advice for Groww portfolios.")
+login_app = typer.Typer(help="Authenticate with Groww or Google.")
+app.add_typer(login_app, name="login")
 console = Console()
 
 
@@ -256,6 +258,39 @@ def _render_recommendations(result: dict) -> None:
         )
         for issue in (critique.get("issues") or [])[:5]:
             console.print(f"  • {issue}")
+
+
+# ────────────────────────── login subcommands ────────────────────────
+
+
+@login_app.command("groww")
+def login_groww() -> None:
+    """Authenticate with Groww (API key + secret) and store credentials locally.
+
+    Opens the Groww developer portal, prompts for your API Key and Secret,
+    validates them against Groww's token endpoint, and persists everything
+    to ~/.pennywise/credentials.json.  Subsequent commands use the stored
+    credentials automatically — no need to set GROWW_API_KEY in .env.
+    """
+    from pennywise.login import login_groww as _login_groww
+    _login_groww(console)
+
+
+@login_app.command("google")
+def login_google() -> None:
+    """Authenticate with Google via browser OAuth.
+
+    Opens your browser, waits for the OAuth callback on localhost:18765,
+    and stores your Google identity in ~/.pennywise/credentials.json.
+
+    Prerequisites:
+      1. Create OAuth 2.0 credentials (Desktop app) in Google Cloud Console.
+      2. Add http://localhost:18765/callback as an authorised redirect URI.
+      3. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env (or enter them
+         at the prompt).
+    """
+    from pennywise.login import login_google as _login_google
+    _login_google(console)
 
 
 if __name__ == "__main__":

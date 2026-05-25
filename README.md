@@ -90,10 +90,32 @@ uv run uvicorn pennywise.api.app:create_app --factory --reload
 
 | Command | What it does | Network |
 |---|---|---|
+| `pennywise login groww` | Interactive wizard: enter Groww API key + secret, validate, store in `~/.pennywise/credentials.json`. | Groww |
+| `pennywise login google` | Browser OAuth: opens Google sign-in, receives callback on `localhost:18765`, stores identity + tokens. | Google |
 | `pennywise snapshot` | Fetch Groww holdings + LTP, tag every ticker with sector / industry / market cap from Screener, persist to `~/.pennywise/snapshot.json`. | Groww + Screener |
 | `pennywise risk` | Read snapshot, compute HHI / sector mix / market-cap mix / gaps, generate LLM commentary. | Anthropic only |
 | `pennywise recommend` | Run the full LangGraph workflow: candidate pick → fundamentals → technicals → news → synthesis → critique → finalize. | All sources |
 | `pennywise chat` | Interactive REPL. Claude has tool access to your portfolio. | Anthropic + on-demand |
+
+### Credential storage
+
+`pennywise login groww` and `pennywise login google` both persist to
+`~/.pennywise/credentials.json` (mode 0600 — owner read/write only).
+All subsequent commands pick up stored credentials automatically; you
+don't need to keep secrets in `.env`.
+
+Groww daily access tokens are automatically re-exchanged from the stored
+API key + secret when they expire (~23 h), so you only need to run
+`pennywise login groww` once.
+
+**Google OAuth prerequisites** (needed only for `pennywise login google`):
+
+1. Create OAuth 2.0 credentials in
+   [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+   (Application type: **Desktop app**).
+2. Add `http://localhost:18765/callback` as an authorised redirect URI.
+3. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env`, or enter
+   them at the prompt the first time you run the command.
 
 ## Chat interface
 
@@ -223,7 +245,7 @@ Refresh the market-cap floors biannually from
 uv run pytest -q
 ```
 
-56 tests, all offline — mocked HTTP responses and inline HTML fixtures,
+65 tests, all offline — mocked HTTP responses and inline HTML fixtures,
 no live calls. Adding a new connector? Add a test that asserts the
 parser handles real response shapes.
 

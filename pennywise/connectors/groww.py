@@ -67,7 +67,17 @@ class GrowwConnector:
         api_secret: str | None = None,
         timeout: float = 10.0,
     ):
+        # 1. Explicit arg
+        # 2. Env var GROWW_API_TOKEN
+        # 3. Credentials file (~/.pennywise/credentials.json) — auto-refreshes
+        # 4. Env vars GROWW_API_KEY + GROWW_API_SECRET
         token = token or os.environ.get("GROWW_API_TOKEN")
+        if not token:
+            try:
+                from pennywise.credentials import get_groww_token
+                token = get_groww_token()
+            except Exception:
+                pass
         if not token:
             api_key = api_key or os.environ.get("GROWW_API_KEY")
             api_secret = api_secret or os.environ.get("GROWW_API_SECRET")
@@ -75,8 +85,9 @@ class GrowwConnector:
                 token = exchange_for_access_token(api_key, api_secret, timeout=timeout)
             else:
                 raise RuntimeError(
-                    "No Groww credentials. Set GROWW_API_TOKEN, or both "
-                    "GROWW_API_KEY and GROWW_API_SECRET."
+                    "No Groww credentials found.\n"
+                    "Run:  pennywise login groww\n"
+                    "Or set GROWW_API_TOKEN (or GROWW_API_KEY + GROWW_API_SECRET) in .env"
                 )
         self.token = token
         self._client = httpx.Client(
