@@ -15,6 +15,14 @@ alone are 22%. Trimming RECLTD to ~10% and adding one IT or Healthcare
 name (both currently <3%) would bring HHI under 0.15.
 ```
 
+## How auth works
+
+PennyWise uses **Google** as its identity layer — you sign in with your
+Google account, then link your Groww API credentials to that identity.
+The CLI stores everything in `~/.pennywise/credentials.json`; the API
+backend stores it in DynamoDB. Either way, once linked, every command
+uses your holdings automatically.
+
 ## Why this exists
 
 The Groww app shows what you own. It doesn't tell you whether you're
@@ -54,30 +62,45 @@ Two design choices worth calling out:
 
 ## Quickstart
 
-### CLI (local use)
+### CLI (single user, local)
 
 ```bash
 git clone https://github.com/udit-amin/PennyWise.git
 cd PennyWise
 uv sync
-cp .env.example .env       # then fill in GROWW_API_TOKEN + ANTHROPIC_API_KEY
-uv run pennywise snapshot  # ~30-60s the first time
-uv run pennywise chat      # ask anything
+echo "ANTHROPIC_API_KEY=sk-ant-…" >> .env
+
+pennywise login google     # sign in with Google — establishes your PennyWise identity
+pennywise login groww      # link your Groww account (checksum or TOTP — see below)
+pennywise snapshot         # fetch + tag your holdings (~30-60s the first time)
+pennywise chat             # ask anything
 ```
 
-### API + Docker (for a frontend)
+> **Google OAuth prerequisites** — before `pennywise login google`:
+> 1. Create OAuth 2.0 credentials in
+>    [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+>    (Application type: **Desktop app**).
+> 2. Add `http://localhost:18765/callback` as an authorised redirect URI.
+> 3. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env`.
 
-The FastAPI backend exposes the same tools over REST + WebSocket, with
-Google OAuth and DynamoDB-backed session persistence.
+### API + Docker (multi-user, with web frontend)
 
 ```bash
-cp .env.example .env       # fill in ANTHROPIC_API_KEY, GROWW_API_TOKEN,
-                           # GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
-docker-compose up          # starts API on :8000, DynamoDB-local on :8042
+# Fill .env: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, ANTHROPIC_API_KEY
+# Add http://localhost:8000/api/auth/google/callback as an authorised
+# redirect URI (Web app type) in Google Cloud Console.
+
+docker-compose up          # API on :8000, DynamoDB-local on :8042
+
+# In browser:
+# → http://localhost:8000/login
+# → Sign in with Google → PennyWise JWT shown on screen
+
+# Link your Groww account (Authorization: Bearer <jwt>):
+# POST /api/auth/groww-credentials  {"api_key": "…", "api_secret": "…"}
 ```
 
-API docs are auto-generated at `http://localhost:8000/docs` once the
-server is running.
+API docs auto-generate at `http://localhost:8000/docs`.
 
 To run the API without Docker:
 
@@ -88,40 +111,45 @@ uv run uvicorn pennywise.api.app:create_app --factory --reload
 
 ## CLI commands
 
-| Command | What it does | Network |
+| Command | What it does |
+|---|---|
+| `pennywise login google` | Sign in to PennyWise with your Google account. Opens your browser, receives the OAuth callback on `localhost:18765`, and stores your identity in `~/.pennywise/credentials.json`. Run this first on a fresh install. |
+| `pennywise login groww` | Link your Groww account. Opens `groww.in/trade-api`, prompts for your API credentials, and stores them. Two auth methods — see below. |
+| `pennywise snapshot` | Fetch Groww holdings + LTP, tag every ticker with sector / industry / market cap from Screener, persist to `~/.pennywise/snapshot.json`. | 
+| `pennywise risk` | Read snapshot, compute HHI / sector mix / market-cap mix / gaps, generate LLM commentary. |
+| `pennywise recommend` | Run the full LangGraph workflow: candidate pick → fundamentals → technicals → news → synthesis → critique → finalize. |
+| `pennywise chat` | Interactive REPL. Claude has tool access to your portfolio. |
+
+### Groww auth methods
+
+`pennywise login groww` asks you to choose between two methods:
+
+| Method | Setup | Refresh |
 |---|---|---|
-| `pennywise login groww` | Interactive wizard: enter Groww API key + secret, validate, store in `~/.pennywise/credentials.json`. | Groww |
-| `pennywise login google` | Browser OAuth: opens Google sign-in, receives callback on `localhost:18765`, stores identity + tokens. | Google |
-| `pennywise snapshot` | Fetch Groww holdings + LTP, tag every ticker with sector / industry / market cap from Screener, persist to `~/.pennywise/snapshot.json`. | Groww + Screener |
-| `pennywise risk` | Read snapshot, compute HHI / sector mix / market-cap mix / gaps, generate LLM commentary. | Anthropic only |
-| `pennywise recommend` | Run the full LangGraph workflow: candidate pick → fundamentals → technicals → news → synthesis → critique → finalize. | All sources |
-| `pennywise chat` | Interactive REPL. Claude has tool access to your portfolio. | Anthropic + on-demand |
+| **Checksum** (recommended) | API Key + Secret from your Groww developer account | Fully automatic — run once |
+| **TOTP** | API Key + base32 secret (the string shown next to the QR code on Groww's TOTP setup screen, e.g. `GJ4AHT26…`) | Fully automatic — PennyWise generates the 6-digit codes from the stored secret |
 
-### Credential storage
+Both methods auto-refresh daily at 6:00 AM IST (when Groww rotates tokens). No daily re-login required for either.
 
-`pennywise login groww` and `pennywise login google` both persist to
-`~/.pennywise/credentials.json` (mode 0600 — owner read/write only).
-All subsequent commands pick up stored credentials automatically; you
-don't need to keep secrets in `.env`.
+### Session persistence
 
-Groww daily access tokens are automatically re-exchanged from the stored
-API key + secret when they expire (~23 h), so you only need to run
-`pennywise login groww` once.
+Every chat is autosaved to `~/.pennywise/chats/<id>.json` after every turn. `pennywise chat` resumes the most recent session by default.
 
-**Google OAuth prerequisites** (needed only for `pennywise login google`):
+In-REPL commands:
 
-1. Create OAuth 2.0 credentials in
-   [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
-   (Application type: **Desktop app**).
-2. Add `http://localhost:18765/callback` as an authorised redirect URI.
-3. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env`, or enter
-   them at the prompt the first time you run the command.
+```
+/help       list commands
+/new        start a fresh session
+/sessions   list saved sessions, newest first
+/load <id>  resume a specific session
+/where      path to the current session file
+/verbose    toggle tool-call tracing
+/quit       exit
+```
 
-## Chat interface
+### Chat tools
 
-`pennywise chat` is the headline UX. Claude is wired up with seven
-deterministic tools — three read the cached portfolio, three pull live
-market data, one runs the full workflow:
+Claude is wired up with seven deterministic tools:
 
 | Tool | Source | Speed |
 |---|---|---|
@@ -133,51 +161,32 @@ market data, one runs the full workflow:
 | `fetch_news(symbol)` | Moneycontrol RSS (live) | ~1-2s |
 | `list_recommendations(focus)` | full LangGraph workflow | ~30s |
 
-Live tools accept ANY NSE symbol — held or not — so questions like
-*"should I buy INFY?"* trigger fundamentals + technicals fetches and a
-real, signal-cited answer.
+Live tools accept any NSE symbol — held or not. Questions like *"should I
+buy INFY?"* trigger fundamentals + technicals fetches and a real,
+signal-cited answer.
 
 ```bash
-uv run pennywise chat                 # resume the most recent session
-uv run pennywise chat --new           # start fresh instead
-uv run pennywise chat --session <id>  # resume a specific session
-uv run pennywise chat --verbose       # trace every tool call
-uv run pennywise chat --no-reasoning  # skip extended thinking
-```
-
-### Session persistence
-
-Every chat is autosaved to `~/.pennywise/chats/<id>.json` after every
-turn (atomic write — a crash mid-conversation never corrupts the file).
-
-By default `pennywise chat` resumes the most recent session, so you can
-exit, come back tomorrow, and continue where you left off — Claude
-still has the conversation context.
-
-In-REPL commands:
-
-```
-/help       list commands
-/new        start a fresh session (saves the current one first)
-/sessions   list saved sessions, newest first
-/load <id>  resume a specific session
-/where      print the path to the current session file
-/verbose    toggle tool-call tracing
-/quit       exit (already saved)
+pennywise chat                 # resume most recent session
+pennywise chat --new           # start fresh
+pennywise chat --session <id>  # resume a specific session
+pennywise chat --verbose       # trace every tool call
+pennywise chat --no-reasoning  # skip extended thinking
 ```
 
 ## API endpoints
 
-All API routes require a JWT from the Google OAuth flow (except `/health`).
+All endpoints require `Authorization: Bearer <pennywise-jwt>` (except `/health` and `/login`).
 
 | Method | Path | Description |
 |---|---|---|
+| GET | `/login` | Sign-in page with Google button |
 | GET | `/health` | Health check |
-| GET | `/api/auth/google/url` | Get Google OAuth URL |
-| POST | `/api/auth/google/callback` | Exchange auth code for JWT |
+| GET | `/api/auth/google/start` | Redirect to Google OAuth |
+| GET | `/api/auth/google/callback` | Browser OAuth callback → HTML page with JWT |
+| POST | `/api/auth/google/callback` | JSON OAuth callback (for JS frontends) |
 | GET | `/api/auth/me` | Current user info |
-| POST | `/api/auth/groww-credentials` | Store Groww API credentials |
-| GET | `/api/portfolio/holdings` | User's holdings with sector + P&L |
+| POST | `/api/auth/groww-credentials` | Link Groww API credentials to account |
+| GET | `/api/portfolio/holdings` | Holdings with sector + P&L |
 | GET | `/api/portfolio/risk` | Concentration / risk metrics |
 | GET | `/api/tools/technicals/{symbol}` | Live technical indicators |
 | GET | `/api/tools/fundamentals/{symbol}` | Live fundamentals from Screener |
@@ -209,30 +218,26 @@ the same tools:
 }
 ```
 
-Then `claude /mcp` will show both servers; ask *"What sector am I
-over-exposed to?"* and the chat client will call
-`pennywise.portfolio_risk` directly.
-
 ## Configuration
 
-All knobs live in `.env`:
+All knobs live in `.env` (copy from `.env.example`):
 
 | Var | Default | Meaning |
 |---|---|---|
-| `GROWW_API_TOKEN` | — | Daily access token from Groww dashboard. |
-| `GROWW_API_KEY` / `GROWW_API_SECRET` | — | Alternative: PennyWise mints the daily token from these. |
 | `ANTHROPIC_API_KEY` | — | Required for `risk`, `recommend`, `chat`. |
+| `GROWW_API_TOKEN` | — | Pre-minted daily Groww token (alternative to running `pennywise login groww`). |
 | `PENNYWISE_LLM_MODEL` | `claude-opus-4-7` | Claude model id. Sonnet-class models also work and cost ~3× less. |
 | `PENNYWISE_REASONING_EFFORT` | `medium` | Adaptive-thinking effort for Synthesizer / Critic (`low` / `medium` / `high`). |
 | `PENNYWISE_HHI_FLAG` | `0.25` | HHI threshold for the "concentrated" flag. |
 | `PENNYWISE_TOP_NAME_FLAG` | `0.20` | Single-name weight that triggers a TRIM suggestion. |
 | `PENNYWISE_LARGE_CAP_FLOOR_CR` | `80000` | AMFI top-100 floor (H1 2025). |
 | `PENNYWISE_MID_CAP_FLOOR_CR` | `28000` | AMFI top-250 floor (H1 2025). |
-| `GOOGLE_CLIENT_ID` | — | Google OAuth client ID (API backend only). |
-| `GOOGLE_CLIENT_SECRET` | — | Google OAuth client secret (API backend only). |
-| `JWT_SECRET` | `pennywise-dev-secret-change-me` | JWT signing secret (API backend only). |
-| `DYNAMODB_ENDPOINT` | — | DynamoDB-local URL; leave unset for real AWS. |
-| `CORS_ORIGINS` | `localhost:3000,5173` | Comma-separated allowed origins. |
+| `GOOGLE_CLIENT_ID` | — | Google OAuth client ID. |
+| `GOOGLE_CLIENT_SECRET` | — | Google OAuth client secret. |
+| `GOOGLE_REDIRECT_URI` | `http://localhost:8000/api/auth/google/callback` | Redirect URI registered in Google Cloud Console (API backend). For CLI, register `http://localhost:18765/callback` separately. |
+| `JWT_SECRET` | `pennywise-dev-secret-change-me` | JWT signing secret for the API backend. Change this in production. |
+| `DYNAMODB_ENDPOINT` | — | DynamoDB-local URL (`http://localhost:8042`); leave unset for real AWS. |
+| `CORS_ORIGINS` | `localhost:3000,5173` | Comma-separated allowed origins for the API. |
 
 Refresh the market-cap floors biannually from
 [amfiindia.com → Categorization of Stocks][amfi].
@@ -245,9 +250,8 @@ Refresh the market-cap floors biannually from
 uv run pytest -q
 ```
 
-65 tests, all offline — mocked HTTP responses and inline HTML fixtures,
-no live calls. Adding a new connector? Add a test that asserts the
-parser handles real response shapes.
+72 tests, all offline — mocked HTTP responses and inline HTML fixtures,
+no live calls.
 
 ## Project layout
 
@@ -256,6 +260,8 @@ pennywise/
 ├── cli.py                 # typer entrypoint
 ├── chat.py                # interactive REPL + tool definitions
 ├── config.py              # .env loading
+├── credentials.py         # ~/.pennywise/credentials.json store + TOTP generation
+├── login.py               # pennywise login groww / google flows
 ├── snapshot.py            # on-disk portfolio cache
 ├── tagging.py             # build_snapshot() — holdings + LTP + Screener tags
 ├── connectors/            # groww / screener / yfinance / moneycontrol
@@ -264,10 +270,10 @@ pennywise/
 │   ├── _llm.py            # shared structured-output helper (with reasoning)
 │   ├── strategy_synthesizer.py
 │   ├── strategy_critic.py
-│   └── ...
+│   └── …
 ├── graph/                 # LangGraph state + workflow wiring
 ├── api/                   # FastAPI backend
-│   ├── app.py             # application factory
+│   ├── app.py             # application factory + /login page
 │   ├── auth.py            # Google OAuth + JWT
 │   ├── db.py              # DynamoDB persistence
 │   ├── streaming.py       # WebSocket chat adapter
