@@ -173,35 +173,7 @@ def test_set_groww_credentials_totp_stores_secret():
     assert data["groww_totp_secret"] == "GJ4AHT26CZVXPERD7M7XGAOOQK3LE5NN"
 
 
-# ── Google credentials ────────────────────────────────────────────────
-
-
-def test_set_google_credentials_persists_fields():
-    creds_mod.set_google_credentials(
-        email="user@example.com",
-        name="Test User",
-        picture=None,
-        access_token="gat",
-        refresh_token="grt",
-        id_token="gid",
-        expires_in=3600,
-    )
-    data = creds_mod.load()
-    assert data["google_email"] == "user@example.com"
-    assert data["google_access_token"] == "gat"
-    assert data["google_refresh_token"] == "grt"
-
-
 # ── login state helpers ───────────────────────────────────────────────
-
-
-def test_is_logged_in_google_true_when_email_stored():
-    creds_mod.save({"google_email": "user@example.com"})
-    assert creds_mod.is_logged_in_google() is True
-
-
-def test_is_logged_in_google_false_when_empty():
-    assert creds_mod.is_logged_in_google() is False
 
 
 def test_is_logged_in_groww_true_when_key_stored():

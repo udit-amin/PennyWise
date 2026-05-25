@@ -17,11 +17,14 @@ name (both currently <3%) would bring HHI under 0.15.
 
 ## How auth works
 
-PennyWise uses **Google** as its identity layer — you sign in with your
-Google account, then link your Groww API credentials to that identity.
-The CLI stores everything in `~/.pennywise/credentials.json`; the API
-backend stores it in DynamoDB. Either way, once linked, every command
-uses your holdings automatically.
+**CLI (single user):** link your Groww API credentials once via
+`pennywise login groww`. Everything is stored in
+`~/.pennywise/credentials.json`; tokens auto-refresh at 6 AM IST daily.
+
+**API / web (multi-user):** uses **Google OAuth** as the identity layer.
+Sign in with Google → receive a PennyWise JWT → use it for all API
+calls. Groww credentials are linked to your Google identity and stored
+in DynamoDB.
 
 ## Why this exists
 
@@ -70,18 +73,10 @@ cd PennyWise
 uv sync
 echo "ANTHROPIC_API_KEY=sk-ant-…" >> .env
 
-pennywise login google     # sign in with Google — establishes your PennyWise identity
 pennywise login groww      # link your Groww account (checksum or TOTP — see below)
 pennywise snapshot         # fetch + tag your holdings (~30-60s the first time)
 pennywise chat             # ask anything
 ```
-
-> **Google OAuth prerequisites** — before `pennywise login google`:
-> 1. Create OAuth 2.0 credentials in
->    [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
->    (Application type: **Desktop app**).
-> 2. Add `http://localhost:18765/callback` as an authorised redirect URI.
-> 3. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env`.
 
 ### API + Docker (multi-user, with web frontend)
 
@@ -111,12 +106,9 @@ uv run uvicorn pennywise.api.app:create_app --factory --reload
 
 ## CLI commands
 
-Commands must be run in order on a fresh install: sign in with Google first, then link Groww. All portfolio commands require both.
-
 | Command | What it does |
 |---|---|
-| `pennywise login google` | **Step 1.** Sign in to PennyWise with your Google account. Opens your browser, receives the OAuth callback on `localhost:18765`, and stores your identity in `~/.pennywise/credentials.json`. |
-| `pennywise login groww` | **Step 2.** Link your Groww account. Requires Google login first. Prompts for API credentials and stores them. Two auth methods — see below. |
+| `pennywise login groww` | Link your Groww account. Prompts for API credentials and stores them in `~/.pennywise/credentials.json`. Two auth methods — see below. |
 | `pennywise snapshot` | Fetch Groww holdings + LTP, tag every ticker with sector / industry / market cap from Screener, persist to `~/.pennywise/snapshot.json`. |
 | `pennywise risk` | Read snapshot, compute HHI / sector mix / market-cap mix / gaps, generate LLM commentary. |
 | `pennywise recommend` | Run the full LangGraph workflow: candidate pick → fundamentals → technicals → news → synthesis → critique → finalize. |
@@ -252,7 +244,7 @@ Refresh the market-cap floors biannually from
 uv run pytest -q
 ```
 
-76 tests, all offline — mocked HTTP responses and inline HTML fixtures,
+73 tests, all offline — mocked HTTP responses and inline HTML fixtures,
 no live calls.
 
 ## Project layout

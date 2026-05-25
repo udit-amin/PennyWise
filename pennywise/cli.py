@@ -17,24 +17,12 @@ app.add_typer(login_app, name="login")
 console = Console()
 
 
-def _require_google() -> str:
-    """Exit with a clear message if not signed in with Google. Returns email."""
-    from pennywise.credentials import get_google_email, is_logged_in_google
-    if not is_logged_in_google():
-        console.print(
-            "\n[red]Not signed in.[/red] PennyWise requires a Google account.\n"
-            "Run:  [bold]pennywise login google[/bold]\n"
-        )
-        raise SystemExit(1)
-    return get_google_email()  # type: ignore[return-value]
-
-
-def _require_groww(email: str) -> None:
+def _require_groww() -> None:
     """Exit with a clear message if Groww account is not linked."""
     from pennywise.credentials import is_logged_in_groww
     if not is_logged_in_groww():
         console.print(
-            f"\n[red]Groww account not linked for {email}.[/red]\n"
+            "\n[red]Groww account not linked.[/red]\n"
             "Run:  [bold]pennywise login groww[/bold]\n"
         )
         raise SystemExit(1)
@@ -44,9 +32,7 @@ def _require_groww(email: str) -> None:
 def snapshot() -> None:
     """Fetch holdings + LTP + sector/industry tags from Groww and Screener,
     persist to ~/.pennywise/snapshot.json, and render the tagged portfolio."""
-    email = _require_google()
-    _require_groww(email)
-    console.print(f"[dim]Signed in as {email}[/dim]")
+    _require_groww()
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold]{task.description}"),
@@ -77,9 +63,7 @@ def risk(
 ) -> None:
     """Analyse the on-disk snapshot: industry tagging is already done, so this
     is pure concentration math + LLM narrative commentary (no external HTTP)."""
-    email = _require_google()
-    _require_groww(email)
-    console.print(f"[dim]Signed in as {email}[/dim]")
+    _require_groww()
     snap = _ensure_snapshot(fresh=fresh, max_age_s=max_age_min * 60)
     state = {
         "holdings": list(snap.holdings),
@@ -103,9 +87,7 @@ def risk(
 @app.command()
 def recommend(focus: str = typer.Option("all", help="all | gaps | rebalance | new")) -> None:
     """Run the full LangGraph workflow and print recommendations."""
-    email = _require_google()
-    _require_groww(email)
-    console.print(f"[dim]Signed in as {email}[/dim]")
+    _require_groww()
     result = run_pennywise(focus=focus)
     _render_recommendations(result)
 
@@ -124,9 +106,7 @@ def chat(
     fundamentals (Screener) + technicals (yfinance) + news (Moneycontrol),
     and the full recommendation workflow.
     """
-    email = _require_google()
-    _require_groww(email)
-    console.print(f"[dim]Signed in as {email}[/dim]")
+    _require_groww()
     # Imported lazily — chat pulls in the Anthropic SDK + rich.markdown,
     # neither of which `snapshot` or `risk` need.
     from pennywise.chat import run_chat
@@ -309,23 +289,6 @@ def login_groww() -> None:
     """
     from pennywise.login import login_groww as _login_groww
     _login_groww(console)
-
-
-@login_app.command("google")
-def login_google() -> None:
-    """Authenticate with Google via browser OAuth.
-
-    Opens your browser, waits for the OAuth callback on localhost:18765,
-    and stores your Google identity in ~/.pennywise/credentials.json.
-
-    Prerequisites:
-      1. Create OAuth 2.0 credentials (Desktop app) in Google Cloud Console.
-      2. Add http://localhost:18765/callback as an authorised redirect URI.
-      3. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env (or enter them
-         at the prompt).
-    """
-    from pennywise.login import login_google as _login_google
-    _login_google(console)
 
 
 if __name__ == "__main__":

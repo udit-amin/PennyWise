@@ -171,46 +171,6 @@ def set_groww_credentials(
     update(**fields)
 
 
-# ── Google ────────────────────────────────────────────────────────────
-
-
-def set_google_credentials(
-    *,
-    email: str,
-    name: str | None,
-    picture: str | None,
-    access_token: str,
-    refresh_token: str | None,
-    id_token: str | None,
-    expires_in: int,
-) -> None:
-    """Persist Google OAuth tokens."""
-    update(
-        google_email=email,
-        google_name=name,
-        google_picture=picture,
-        google_access_token=access_token,
-        google_refresh_token=refresh_token,
-        google_id_token=id_token,
-        google_token_expires_at=(
-            datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-        ).isoformat(),
-    )
-
-
-def get_google_email() -> str | None:
-    return load().get("google_email")
-
-
-def get_google_id_token() -> str | None:
-    return load().get("google_id_token")
-
-
-def is_logged_in_google() -> bool:
-    """True if a Google identity is stored (email present in credentials)."""
-    return bool(load().get("google_email"))
-
-
 def is_logged_in_groww() -> bool:
     """True if Groww API key is stored (token may still need refreshing)."""
     return bool(load().get("groww_api_key"))
