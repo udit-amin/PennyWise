@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 from pennywise.api import db
 from pennywise.api.routes import auth, chat, portfolio, recommendations, tools
@@ -56,6 +57,11 @@ def create_app() -> FastAPI:
     app.include_router(tools.router)
     app.include_router(chat.router)
     app.include_router(recommendations.router)
+
+    # ── Login page ───────────────────────────────────────────────────
+    @app.get("/login", response_class=HTMLResponse, include_in_schema=False)
+    async def login_page():
+        return HTMLResponse(auth._LOGIN_HTML)
 
     # ── Health check ─────────────────────────────────────────────────
     @app.get("/health", tags=["infra"])

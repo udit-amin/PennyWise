@@ -1,9 +1,16 @@
 """CLI login flows for PennyWise.
 
 ``login_groww(console)``
-    Interactive wizard: prompts for Groww API key + secret, validates
-    them by exchanging for a daily access token, and persists to
+    Interactive wizard: opens the Groww Trade API docs page, prompts for
+    your API Key and either a Secret (checksum auth) or a TOTP code, validates
+    against Groww's token endpoint, and persists to
     ``~/.pennywise/credentials.json``.
+
+    Auth methods:
+      checksum — API Key + Secret; PennyWise auto-refreshes silently at
+                 6 AM IST every day. Run once.
+      TOTP     — API Key + 6-digit code from your authenticator app; you
+                 must re-run ``pennywise login groww`` each day after 6 AM IST.
 
 ``login_google(console)``
     Browser OAuth flow: opens the Google OAuth page, spins up a
@@ -25,10 +32,12 @@ from urllib.parse import urlencode, urlparse, parse_qs
 
 import httpx
 from rich.console import Console
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Prompt
 
 from pennywise import credentials as creds_mod
 from pennywise.connectors.groww import exchange_for_access_token
+
+GROWW_DOCS_URL = "https://groww.in/trade-api"
 
 # Fixed port for Google OAuth local callback — add this to Google Cloud Console.
 GOOGLE_CALLBACK_PORT = 18765
@@ -43,39 +52,70 @@ def login_groww(console: Console) -> None:
     """Interactive Groww credential setup wizard."""
     console.print(
         "\n[bold]PennyWise — Groww login[/bold]\n\n"
-        "You need a Groww API Key and Secret from the Groww developer portal.\n"
-        "If you don't have one, PennyWise can open the portal for you.\n"
+        "Groww provides two ways to authenticate with their Trade API:\n\n"
+        "  [bold]1. Checksum[/bold] (recommended)\n"
+        "     API Key + Secret → PennyWise refreshes your token silently every day.\n"
+        "     Run this wizard once; no daily action needed.\n\n"
+        "  [bold]2. TOTP[/bold]\n"
+        "     API Key + 6-digit code from an authenticator app.\n"
+        "     You must re-run this wizard each morning after 6 AM IST.\n\n"
+        f"Get your API credentials at: [link={GROWW_DOCS_URL}]{GROWW_DOCS_URL}[/link]\n"
+        "  → Docs → Authentication → Cloud API Keys\n"
     )
 
-    if Confirm.ask("Open Groww developer portal in browser?", default=True):
-        webbrowser.open("https://developer.groww.in/")
-        console.print(
-            "[dim]Log in → My Apps → Create App (or pick an existing one) "
-            "→ copy the API Key and Secret shown there.[/dim]\n"
-        )
+    if webbrowser.open(GROWW_DOCS_URL):
+        console.print("[dim]Opened Groww Trade API docs in your browser.[/dim]\n")
+
+    method = Prompt.ask(
+        "Auth method",
+        choices=["checksum", "totp"],
+        default="checksum",
+    )
 
     api_key = Prompt.ask("Groww API Key (long JWT string)").strip()
-    api_secret = Prompt.ask("Groww API Secret", password=True).strip()
-
-    if not api_key or not api_secret:
-        console.print("[red]Both API Key and Secret are required.[/red]")
+    if not api_key:
+        console.print("[red]API Key is required.[/red]")
         raise SystemExit(1)
 
-    console.print("\n[dim]Validating credentials with Groww…[/dim]")
-    try:
-        access_token = exchange_for_access_token(api_key, api_secret)
-    except Exception as exc:
-        console.print(f"[red]Validation failed: {exc}[/red]")
-        raise SystemExit(1)
-
-    creds_mod.set_groww_credentials(
-        api_key, api_secret, access_token=access_token
-    )
-    console.print(
-        f"\n[bold green]Groww credentials saved.[/bold green] "
-        f"Access token valid for ~23 h and will auto-refresh.\n"
-        f"[dim]Stored in {creds_mod.credentials_path()}[/dim]\n"
-    )
+    if method == "checksum":
+        api_secret = Prompt.ask("Groww API Secret", password=True).strip()
+        if not api_secret:
+            console.print("[red]API Secret is required for checksum auth.[/red]")
+            raise SystemExit(1)
+        console.print("\n[dim]Validating credentials with Groww…[/dim]")
+        try:
+            access_token = exchange_for_access_token(api_key, api_secret)
+        except Exception as exc:
+            console.print(f"[red]Validation failed: {exc}[/red]")
+            raise SystemExit(1)
+        creds_mod.set_groww_credentials(
+            api_key, api_secret, access_token=access_token, auth_method="checksum"
+        )
+        console.print(
+            "\n[bold green]Groww credentials saved (checksum).[/bold green]\n"
+            "Token will auto-refresh daily at 6 AM IST — no further action needed.\n"
+            f"[dim]Stored in {creds_mod.credentials_path()}[/dim]\n"
+        )
+    else:
+        totp_code = Prompt.ask("Current 6-digit TOTP code").strip()
+        if not totp_code or not totp_code.isdigit() or len(totp_code) != 6:
+            console.print("[red]TOTP code must be exactly 6 digits.[/red]")
+            raise SystemExit(1)
+        console.print("\n[dim]Validating TOTP with Groww…[/dim]")
+        try:
+            access_token = exchange_for_access_token(api_key, totp_code=totp_code)
+        except Exception as exc:
+            console.print(f"[red]Validation failed: {exc}[/red]")
+            raise SystemExit(1)
+        creds_mod.set_groww_credentials(
+            api_key, None, access_token=access_token, auth_method="totp"
+        )
+        console.print(
+            "\n[bold green]Groww credentials saved (TOTP).[/bold green]\n"
+            "[yellow]Remember:[/yellow] TOTP tokens expire at 6 AM IST. "
+            "Run [bold]pennywise login groww[/bold] again each morning.\n"
+            f"[dim]Stored in {creds_mod.credentials_path()}[/dim]\n"
+        )
 
 
 # ── Google ────────────────────────────────────────────────────────────

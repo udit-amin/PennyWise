@@ -16,6 +16,7 @@ class Settings:
     large_cap_floor_cr: float   # AMFI top-100 floor; H1 2025 ≈ ₹80,000 Cr
     mid_cap_floor_cr: float     # AMFI top-250 floor; H1 2025 ≈ ₹28,000 Cr
     reasoning_effort: str       # "low" | "medium" | "high"
+    google_redirect_uri: str    # OAuth redirect URI registered in Google Cloud Console
 
 
 def load() -> Settings:
@@ -29,4 +30,8 @@ def load() -> Settings:
         large_cap_floor_cr=float(os.getenv("PENNYWISE_LARGE_CAP_FLOOR_CR", "80000")),
         mid_cap_floor_cr=float(os.getenv("PENNYWISE_MID_CAP_FLOOR_CR", "28000")),
         reasoning_effort=os.getenv("PENNYWISE_REASONING_EFFORT", "medium"),
+        google_redirect_uri=os.getenv(
+            "GOOGLE_REDIRECT_URI",
+            "http://localhost:8000/api/auth/google/callback",
+        ),
     )

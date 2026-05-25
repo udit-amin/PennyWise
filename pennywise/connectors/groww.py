@@ -15,19 +15,35 @@ def _checksum(secret: str, timestamp: str) -> str:
     return hashlib.sha256(f"{secret}{timestamp}".encode()).hexdigest()
 
 
-def exchange_for_access_token(api_key: str, api_secret: str, *, timeout: float = 10.0) -> str:
-    """Trade an API key + secret for a daily access token.
+def exchange_for_access_token(
+    api_key: str,
+    api_secret: str | None = None,
+    *,
+    totp_code: str | None = None,
+    timeout: float = 10.0,
+) -> str:
+    """Trade a Groww API key for a daily access token.
 
-    Groww requires:
-      Authorization: Bearer <API_KEY>
+    Two auth methods (exactly one of api_secret or totp_code must be given):
+
+    Checksum (default):
       body: {"key_type": "approval", "checksum": sha256(secret+timestamp), "timestamp": <epoch_s>}
+
+    TOTP:
+      body: {"key_type": "totp", "totp": "<6-digit code>"}
     """
-    timestamp = str(int(time.time()))
-    body = {
-        "key_type": "approval",
-        "checksum": _checksum(api_secret, timestamp),
-        "timestamp": timestamp,
-    }
+    if totp_code is not None:
+        body: dict = {"key_type": "totp", "totp": totp_code}
+    elif api_secret is not None:
+        timestamp = str(int(time.time()))
+        body = {
+            "key_type": "approval",
+            "checksum": _checksum(api_secret, timestamp),
+            "timestamp": timestamp,
+        }
+    else:
+        raise ValueError("Provide either api_secret (checksum) or totp_code (TOTP).")
+
     r = httpx.post(
         f"{GROWW_BASE}{TOKEN_PATH}",
         json=body,

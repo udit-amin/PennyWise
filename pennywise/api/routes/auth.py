@@ -1,10 +1,14 @@
 """Auth routes: Google OAuth login + user info."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+import os
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import HTMLResponse
 
 from pennywise.api import db
 from pennywise.api.auth import (
+    GOOGLE_CLIENT_ID,
     create_jwt,
     current_user,
     exchange_google_code,
@@ -19,16 +23,177 @@ from pennywise.api.models import (
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+_GOOGLE_REDIRECT_URI = os.getenv(
+    "GOOGLE_REDIRECT_URI",
+    "http://localhost:8000/api/auth/google/callback",
+)
+
+
+# ── Login page ────────────────────────────────────────────────────────
+
+_LOGIN_HTML = """\
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PennyWise — Sign in</title>
+  <style>
+    *{{box-sizing:border-box;margin:0;padding:0}}
+    body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+          background:#0f0f10;color:#e8e8e8;display:flex;align-items:center;
+          justify-content:center;min-height:100vh}}
+    .card{{background:#1a1a1d;border:1px solid #2a2a2d;border-radius:12px;
+           padding:48px 40px;max-width:380px;width:100%;text-align:center}}
+    h1{{font-size:1.6rem;font-weight:700;margin-bottom:6px}}
+    p{{color:#888;font-size:.9rem;margin-bottom:32px}}
+    .btn{{display:inline-flex;align-items:center;gap:10px;background:#fff;
+          color:#111;border:none;border-radius:8px;padding:12px 24px;
+          font-size:.95rem;font-weight:600;cursor:pointer;
+          text-decoration:none;transition:opacity .15s}}
+    .btn:hover{{opacity:.85}}
+    .btn svg{{width:20px;height:20px}}
+    .note{{margin-top:24px;font-size:.8rem;color:#555}}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>PennyWise</h1>
+    <p>Agentic portfolio advisor for Groww</p>
+    <a class="btn" href="/api/auth/google/start">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+        <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+        <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+        <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+      </svg>
+      Sign in with Google
+    </a>
+    <p class="note">Your portfolio data stays on your device.</p>
+  </div>
+</body>
+</html>
+"""
+
+_SUCCESS_HTML = """\
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PennyWise — Signed in</title>
+  <style>
+    *{{box-sizing:border-box;margin:0;padding:0}}
+    body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+          background:#0f0f10;color:#e8e8e8;display:flex;align-items:center;
+          justify-content:center;min-height:100vh}}
+    .card{{background:#1a1a1d;border:1px solid #2a2a2d;border-radius:12px;
+           padding:48px 40px;max-width:440px;width:100%;text-align:center}}
+    h1{{font-size:1.4rem;font-weight:700;margin-bottom:8px;color:#4ade80}}
+    .email{{color:#888;margin-bottom:24px;font-size:.9rem}}
+    .token-label{{text-align:left;font-size:.75rem;color:#666;
+                  margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em}}
+    textarea{{width:100%;background:#111;border:1px solid #333;border-radius:6px;
+              color:#a3e635;font-family:monospace;font-size:.75rem;padding:10px;
+              resize:none;height:80px}}
+    .note{{margin-top:16px;font-size:.8rem;color:#555}}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Signed in!</h1>
+    <p class="email">{email}</p>
+    <p class="token-label">PennyWise JWT (copy for API calls)</p>
+    <textarea readonly onclick="this.select()">{token}</textarea>
+    <p class="note">Token expires in 24 h. Use it as<br>
+      <code>Authorization: Bearer &lt;token&gt;</code></p>
+  </div>
+  <script>
+    // Store in localStorage so client-side apps can pick it up
+    localStorage.setItem('pennywise_jwt', '{token}');
+    localStorage.setItem('pennywise_email', '{email}');
+  </script>
+</body>
+</html>
+"""
+
+_ERROR_HTML = """\
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>PennyWise — Auth error</title>
+<style>body{{font-family:sans-serif;background:#0f0f10;color:#e8e8e8;
+display:flex;align-items:center;justify-content:center;min-height:100vh}}
+.card{{background:#1a1a1d;border:1px solid #f87171;border-radius:12px;
+padding:40px;max-width:400px;text-align:center}}
+h1{{color:#f87171;margin-bottom:12px}}a{{color:#60a5fa}}</style></head>
+<body><div class="card"><h1>Auth error</h1><p>{detail}</p>
+<p style="margin-top:16px"><a href="/login">Try again</a></p></div></body></html>
+"""
+
+
+# ── Routes ────────────────────────────────────────────────────────────
+
+
+@router.get("/google/start", response_class=HTMLResponse, include_in_schema=False)
+async def google_start() -> HTMLResponse:
+    """Redirect the browser directly to Google OAuth (used by the login page)."""
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(
+            status_code=500,
+            detail="GOOGLE_CLIENT_ID is not configured on this server.",
+        )
+    url = google_auth_url(_GOOGLE_REDIRECT_URI)
+    return HTMLResponse(
+        content=f'<html><head><meta http-equiv="refresh" content="0;url={url}"></head></html>',
+        status_code=200,
+    )
+
+
+@router.get("/google/callback", response_class=HTMLResponse)
+async def google_callback_browser(
+    code: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+) -> HTMLResponse:
+    """Browser-facing OAuth callback (Google redirects here after login).
+
+    Exchanges the code, creates/updates the user in DynamoDB, and returns
+    an HTML page that displays the PennyWise JWT and stores it in localStorage.
+    """
+    if error:
+        return HTMLResponse(
+            _ERROR_HTML.format(detail=f"Google returned: {error}"), status_code=400
+        )
+    if not code:
+        return HTMLResponse(
+            _ERROR_HTML.format(detail="No authorization code received."), status_code=400
+        )
+
+    try:
+        info = await exchange_google_code(code, _GOOGLE_REDIRECT_URI)
+    except HTTPException as exc:
+        return HTMLResponse(
+            _ERROR_HTML.format(detail=exc.detail), status_code=exc.status_code
+        )
+
+    user = db.create_user(
+        email=info["email"],
+        name=info.get("name"),
+        picture=info.get("picture"),
+    )
+    token = create_jwt(user["user_id"], user["email"])
+    return HTMLResponse(
+        _SUCCESS_HTML.format(email=user["email"], token=token)
+    )
+
 
 @router.get("/google/url")
 async def get_google_url(redirect_uri: str = Query(...)) -> dict:
-    """Return the Google OAuth URL the frontend should redirect to."""
+    """Return the Google OAuth URL (for JS-driven flows)."""
     return {"url": google_auth_url(redirect_uri)}
 
 
 @router.post("/google/callback", response_model=AuthResponse)
-async def google_callback(body: GoogleCallbackRequest) -> AuthResponse:
-    """Exchange Google auth code for a PennyWise JWT."""
+async def google_callback_api(body: GoogleCallbackRequest) -> AuthResponse:
+    """Exchange Google auth code for a PennyWise JWT (JSON API for frontends)."""
     info = await exchange_google_code(body.code, body.redirect_uri)
     user = db.create_user(
         email=info["email"],
@@ -61,8 +226,7 @@ async def save_groww_credentials(
     body: GrowwCredentialRequest,
     user: dict = Depends(current_user),
 ) -> dict:
-    """Store Groww API credentials (encrypted in DynamoDB for now;
-    graduate to SSM SecureString in production)."""
+    """Store Groww API credentials in DynamoDB."""
     table = db._table("users")
     creds = {}
     if body.token:
