@@ -38,14 +38,27 @@ def build_graph():
     g.add_node("critic", critic_node)
     g.add_node("finalizer", finalizer_node)
 
+    # ── sequential setup: holdings → initial fundamentals → risk → candidates
     g.set_entry_point("portfolio_manager")
     g.add_edge("portfolio_manager", "fundamentals_first")
     g.add_edge("fundamentals_first", "risk_first")
     g.add_edge("risk_first", "candidate_picker")
+
+    # ── parallel fan-out: data-fetch nodes run concurrently ──
+    # fundamentals_full, technicals, and news all read the same state
+    # (holdings + candidate_tickers) and write to independent keys
+    # (fundamentals, technicals, news). LangGraph waits for all three
+    # to complete before running risk_analyzer.
     g.add_edge("candidate_picker", "fundamentals_full")
-    g.add_edge("fundamentals_full", "technicals")
-    g.add_edge("technicals", "news")
+    g.add_edge("candidate_picker", "technicals")
+    g.add_edge("candidate_picker", "news")
+
+    # ── fan-in: risk_analyzer fires after all three data nodes finish
+    g.add_edge("fundamentals_full", "risk_analyzer")
+    g.add_edge("technicals", "risk_analyzer")
     g.add_edge("news", "risk_analyzer")
+
+    # ── sequential tail: risk → commentary → synthesis → critique
     g.add_edge("risk_analyzer", "risk_commentator")
     g.add_edge("risk_commentator", "synthesizer")
     g.add_edge("synthesizer", "critic")

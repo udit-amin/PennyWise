@@ -1,0 +1,31 @@
+services:
+  dynamodb:
+    image: amazon/dynamodb-local:latest
+    ports:
+      - "8042:8000"
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DYNAMODB_ENDPOINT=http://dynamodb:8000
+      - AWS_REGION=ap-south-1
+      - AWS_ACCESS_KEY_ID=local
+      - AWS_SECRET_ACCESS_KEY=local
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GROWW_API_TOKEN=${GROWW_API_TOKEN}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - JWT_SECRET=${JWT_SECRET:-pennywise-dev-secret-change-me}
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+      - PENNYWISE_LLM_MODEL=${PENNYWISE_LLM_MODEL:-claude-opus-4-7}
+      - PENNYWISE_REASONING_EFFORT=${PENNYWISE_REASONING_EFFORT:-medium}
+    depends_on:
+      - dynamodb
+    volumes:
+      - ./pennywise:/app/pennywise  # hot-reload during development
+    command: >
+      uv run uvicorn pennywise.api.app:create_app
+      --host 0.0.0.0 --port 8000 --factory --reload
