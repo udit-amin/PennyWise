@@ -204,3 +204,13 @@ def get_google_email() -> str | None:
 
 def get_google_id_token() -> str | None:
     return load().get("google_id_token")
+
+
+def is_logged_in_google() -> bool:
+    """True if a Google identity is stored (email present in credentials)."""
+    return bool(load().get("google_email"))
+
+
+def is_logged_in_groww() -> bool:
+    """True if Groww API key is stored (token may still need refreshing)."""
+    return bool(load().get("groww_api_key"))

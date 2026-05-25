@@ -50,6 +50,18 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 def login_groww(console: Console) -> None:
     """Interactive Groww credential setup wizard."""
+    from pennywise.credentials import get_google_email, is_logged_in_google
+
+    if not is_logged_in_google():
+        console.print(
+            "\n[red]Not signed in.[/red] Link your Groww account after signing into PennyWise.\n"
+            "Run:  [bold]pennywise login google[/bold]  first.\n"
+        )
+        raise SystemExit(1)
+
+    email = get_google_email()
+    console.print(f"[dim]Signed in as {email}[/dim]\n")
+
     console.print(
         "\n[bold]PennyWise — Groww login[/bold]\n\n"
         "Groww provides two ways to authenticate with their Trade API:\n\n"

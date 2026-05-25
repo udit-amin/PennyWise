@@ -192,6 +192,27 @@ def test_set_google_credentials_persists_fields():
     assert data["google_refresh_token"] == "grt"
 
 
+# ── login state helpers ───────────────────────────────────────────────
+
+
+def test_is_logged_in_google_true_when_email_stored():
+    creds_mod.save({"google_email": "user@example.com"})
+    assert creds_mod.is_logged_in_google() is True
+
+
+def test_is_logged_in_google_false_when_empty():
+    assert creds_mod.is_logged_in_google() is False
+
+
+def test_is_logged_in_groww_true_when_key_stored():
+    creds_mod.save({"groww_api_key": "key"})
+    assert creds_mod.is_logged_in_groww() is True
+
+
+def test_is_logged_in_groww_false_when_empty():
+    assert creds_mod.is_logged_in_groww() is False
+
+
 # ── GrowwConnector credential priority ───────────────────────────────
 
 
