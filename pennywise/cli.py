@@ -12,13 +12,27 @@ from pennywise.snapshot import Snapshot, snapshot_path
 from pennywise.tagging import build_snapshot
 
 app = typer.Typer(help="PennyWise — agentic stock advice for Groww portfolios.")
+login_app = typer.Typer(help="Authenticate with Groww or Google.")
+app.add_typer(login_app, name="login")
 console = Console()
+
+
+def _require_groww() -> None:
+    """Exit with a clear message if Groww account is not linked."""
+    from pennywise.credentials import is_logged_in_groww
+    if not is_logged_in_groww():
+        console.print(
+            "\n[red]Groww account not linked.[/red]\n"
+            "Run:  [bold]pennywise login groww[/bold]\n"
+        )
+        raise SystemExit(1)
 
 
 @app.command()
 def snapshot() -> None:
     """Fetch holdings + LTP + sector/industry tags from Groww and Screener,
     persist to ~/.pennywise/snapshot.json, and render the tagged portfolio."""
+    _require_groww()
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold]{task.description}"),
@@ -49,6 +63,7 @@ def risk(
 ) -> None:
     """Analyse the on-disk snapshot: industry tagging is already done, so this
     is pure concentration math + LLM narrative commentary (no external HTTP)."""
+    _require_groww()
     snap = _ensure_snapshot(fresh=fresh, max_age_s=max_age_min * 60)
     state = {
         "holdings": list(snap.holdings),
@@ -72,6 +87,7 @@ def risk(
 @app.command()
 def recommend(focus: str = typer.Option("all", help="all | gaps | rebalance | new")) -> None:
     """Run the full LangGraph workflow and print recommendations."""
+    _require_groww()
     result = run_pennywise(focus=focus)
     _render_recommendations(result)
 
@@ -90,6 +106,7 @@ def chat(
     fundamentals (Screener) + technicals (yfinance) + news (Moneycontrol),
     and the full recommendation workflow.
     """
+    _require_groww()
     # Imported lazily — chat pulls in the Anthropic SDK + rich.markdown,
     # neither of which `snapshot` or `risk` need.
     from pennywise.chat import run_chat
@@ -256,6 +273,22 @@ def _render_recommendations(result: dict) -> None:
         )
         for issue in (critique.get("issues") or [])[:5]:
             console.print(f"  • {issue}")
+
+
+# ────────────────────────── login subcommands ────────────────────────
+
+
+@login_app.command("groww")
+def login_groww() -> None:
+    """Authenticate with Groww (API key + secret) and store credentials locally.
+
+    Opens the Groww developer portal, prompts for your API Key and Secret,
+    validates them against Groww's token endpoint, and persists everything
+    to ~/.pennywise/credentials.json.  Subsequent commands use the stored
+    credentials automatically — no need to set GROWW_API_KEY in .env.
+    """
+    from pennywise.login import login_groww as _login_groww
+    _login_groww(console)
 
 
 if __name__ == "__main__":

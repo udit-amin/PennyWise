@@ -7,16 +7,15 @@ from pennywise.graph.state import PortfolioState
 
 
 def technicals_node(state: PortfolioState) -> PortfolioState:
-    """Pull technical indicators from yfinance for every held + candidate ticker."""
+    """Pull technical indicators from yfinance for every held + candidate ticker.
+
+    Uses ``fetch_batch`` to download all tickers in a single HTTP request
+    (~3-5s) instead of looping one-by-one (~2-4s × N tickers).
+    """
     held = [h["symbol"] for h in state.get("holdings", []) if h.get("symbol")]
     candidates = state.get("candidate_tickers", [])
     tickers = sorted(set(held + list(candidates)))
 
     yfc = YFinanceClient()
-    out: dict[str, dict] = {}
-    for t in tickers:
-        try:
-            out[t] = asdict(yfc.fetch(t))
-        except Exception as e:
-            out[t] = {"ticker": t, "error": str(e)}
-    return {"technicals": out}
+    batch = yfc.fetch_batch(tickers)
+    return {"technicals": {t: asdict(tech) for t, tech in batch.items()}}

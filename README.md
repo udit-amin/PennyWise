@@ -15,6 +15,17 @@ alone are 22%. Trimming RECLTD to ~10% and adding one IT or Healthcare
 name (both currently <3%) would bring HHI under 0.15.
 ```
 
+## How auth works
+
+**CLI (single user):** link your Groww API credentials once via
+`pennywise login groww`. Everything is stored in
+`~/.pennywise/credentials.json`; tokens auto-refresh at 6 AM IST daily.
+
+**API / web (multi-user):** uses **Google OAuth** as the identity layer.
+Sign in with Google → receive a PennyWise JWT → use it for all API
+calls. Groww credentials are linked to your Google identity and stored
+in DynamoDB.
+
 ## Why this exists
 
 The Groww app shows what you own. It doesn't tell you whether you're
@@ -23,6 +34,27 @@ territory, or which mid-cap candidate would best plug the gap between
 your equity and the broad market. PennyWise does — and shows its work.
 
 ## Architecture
+
+```mermaid
+graph LR
+    subgraph CLI ["CLI  (single user)"]
+        A1[pennywise login groww] --> A2[credentials.json<br/>auto-refresh at 6 AM IST]
+        A2 --> A3[snapshot · risk · recommend · chat]
+    end
+
+    subgraph API ["API  (multi-user · Docker)"]
+        B1[Google OAuth] --> B2[DynamoDB<br/>users · sessions · jobs]
+        B2 --> B3[FastAPI + JWT]
+        B3 --> B4[WebSocket chat]
+    end
+
+    A3 & B3 --> C[Connectors<br/>Groww · Screener · yfinance · Moneycontrol]
+    C --> D[Analytics<br/>HHI · sector · mcap · gaps]
+    D --> E[LangGraph workflow]
+    E --> F[Claude — Synthesizer + Critic<br/>extended thinking]
+```
+
+### Recommendation pipeline
 
 ```mermaid
 graph TD
@@ -40,7 +72,11 @@ graph TD
     style H fill:#7c5cff,color:#fff
 ```
 
-Two design choices worth calling out:
+Three design choices worth calling out:
+
+- **Two surfaces.** The CLI is single-user and only needs Groww credentials
+  (`pennywise login groww`, run once). The API/Docker backend is multi-user
+  and uses Google OAuth → PennyWise JWT for identity.
 
 - **Reasoning models on the analytical nodes.** Synthesis and critique
   are the two places where Claude has to weigh many signals at once; we
@@ -54,29 +90,85 @@ Two design choices worth calling out:
 
 ## Quickstart
 
+### CLI (single user, local)
+
 ```bash
-git clone https://github.com/<you>/PennyWise.git
+git clone https://github.com/udit-amin/PennyWise.git
 cd PennyWise
 uv sync
-cp .env.example .env       # then fill in GROWW_API_TOKEN + ANTHROPIC_API_KEY
-uv run pennywise snapshot  # ~30-60s the first time
-uv run pennywise chat      # ask anything
+echo "ANTHROPIC_API_KEY=sk-ant-…" >> .env
+
+pennywise login groww      # link your Groww account (checksum or TOTP — see below)
+pennywise snapshot         # fetch + tag your holdings (~30-60s the first time)
+pennywise chat             # ask anything
 ```
 
-## Commands
+### API + Docker (multi-user, with web frontend)
 
-| Command | What it does | Network |
+```bash
+# Fill .env: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, ANTHROPIC_API_KEY
+# Add http://localhost:8000/api/auth/google/callback as an authorised
+# redirect URI (Web app type) in Google Cloud Console.
+
+docker-compose up          # API on :8000, DynamoDB-local on :8042
+
+# In browser:
+# → http://localhost:8000/login
+# → Sign in with Google → PennyWise JWT shown on screen
+
+# Link your Groww account (Authorization: Bearer <jwt>):
+# POST /api/auth/groww-credentials  {"api_key": "…", "api_secret": "…"}
+```
+
+API docs auto-generate at `http://localhost:8000/docs`.
+
+To run the API without Docker:
+
+```bash
+uv sync
+uv run uvicorn pennywise.api.app:create_app --factory --reload
+```
+
+## CLI commands
+
+| Command | What it does |
+|---|---|
+| `pennywise login groww` | Link your Groww account. Prompts for API credentials and stores them in `~/.pennywise/credentials.json`. Two auth methods — see below. |
+| `pennywise snapshot` | Fetch Groww holdings + LTP, tag every ticker with sector / industry / market cap from Screener, persist to `~/.pennywise/snapshot.json`. |
+| `pennywise risk` | Read snapshot, compute HHI / sector mix / market-cap mix / gaps, generate LLM commentary. |
+| `pennywise recommend` | Run the full LangGraph workflow: candidate pick → fundamentals → technicals → news → synthesis → critique → finalize. |
+| `pennywise chat` | Interactive REPL. Claude has tool access to your portfolio. |
+
+### Groww auth methods
+
+`pennywise login groww` asks you to choose between two methods:
+
+| Method | Setup | Refresh |
 |---|---|---|
-| `pennywise snapshot` | Fetch Groww holdings + LTP, tag every ticker with sector / industry / market cap from Screener, persist to `~/.pennywise/snapshot.json`. | Groww + Screener |
-| `pennywise risk` | Read snapshot, compute HHI / sector mix / market-cap mix / gaps, generate LLM commentary. | Anthropic only |
-| `pennywise recommend` | Run the full LangGraph workflow: candidate pick → fundamentals → technicals → news → synthesis → critique → finalize. | All sources |
-| `pennywise chat` | Interactive REPL. Claude has tool access to your portfolio. | Anthropic + on-demand |
+| **Checksum** (recommended) | API Key + Secret from your Groww developer account | Fully automatic — run once |
+| **TOTP** | API Key + base32 secret (the string shown next to the QR code on Groww's TOTP setup screen, e.g. `GJ4AHT26…`) | Fully automatic — PennyWise generates the 6-digit codes from the stored secret |
 
-## Chat interface
+Both methods auto-refresh daily at 6:00 AM IST (when Groww rotates tokens). No daily re-login required for either.
 
-`pennywise chat` is the headline UX. Claude is wired up with seven
-deterministic tools — three read the cached portfolio, three pull live
-market data, one runs the full workflow:
+### Session persistence
+
+Every chat is autosaved to `~/.pennywise/chats/<id>.json` after every turn. `pennywise chat` resumes the most recent session by default.
+
+In-REPL commands:
+
+```
+/help       list commands
+/new        start a fresh session
+/sessions   list saved sessions, newest first
+/load <id>  resume a specific session
+/where      path to the current session file
+/verbose    toggle tool-call tracing
+/quit       exit
+```
+
+### Chat tools
+
+Claude is wired up with seven deterministic tools:
 
 | Tool | Source | Speed |
 |---|---|---|
@@ -88,56 +180,39 @@ market data, one runs the full workflow:
 | `fetch_news(symbol)` | Moneycontrol RSS (live) | ~1-2s |
 | `list_recommendations(focus)` | full LangGraph workflow | ~30s |
 
-Live tools accept ANY NSE symbol — held or not — so questions like
-*"should I buy INFY?"* trigger fundamentals + technicals fetches and a
-real, signal-cited answer.
+Live tools accept any NSE symbol — held or not. Questions like *"should I
+buy INFY?"* trigger fundamentals + technicals fetches and a real,
+signal-cited answer.
 
 ```bash
-uv run pennywise chat                 # resume the most recent session
-uv run pennywise chat --new           # start fresh instead
-uv run pennywise chat --session <id>  # resume a specific session
-uv run pennywise chat --verbose       # trace every tool call
-uv run pennywise chat --no-reasoning  # skip extended thinking
+pennywise chat                 # resume most recent session
+pennywise chat --new           # start fresh
+pennywise chat --session <id>  # resume a specific session
+pennywise chat --verbose       # trace every tool call
+pennywise chat --no-reasoning  # skip extended thinking
 ```
 
-### Session persistence
+## API endpoints
 
-Every chat is autosaved to `~/.pennywise/chats/<id>.json` after every
-turn (atomic write — a crash mid-conversation never corrupts the file).
+All endpoints require `Authorization: Bearer <pennywise-jwt>` (except `/health` and `/login`).
 
-By default `pennywise chat` resumes the most recent session, so you can
-exit, come back tomorrow, and continue where you left off — Claude
-still has the conversation context.
-
-In-REPL commands:
-
-```
-/help       list commands
-/new        start a fresh session (saves the current one first)
-/sessions   list saved sessions, newest first
-/load <id>  resume a specific session
-/where      print the path to the current session file
-/verbose    toggle tool-call tracing
-/quit       exit (already saved)
-```
-
-Example session:
-
-```
-you: what's my biggest risk?
-pennywise: Concentration in PSUs. RECLTD (12.3%), PFC (8.1%), and
-BANKBARODA (6.4%) together make up 26.8% — all rate-sensitive PSU
-financials. If RBI cuts more slowly than the market expects, these
-re-rate together.
-
-you: should I trim RECLTD?
-pennywise: Yes. It's your top holding at 12.3% (above the 10% top-name
-flag), RSI is 35.4 (oversold but not extreme), price is below SMA50 and
-SMA200, and MACD has crossed negative. Trim to 8-9% and redeploy into
-the IT gap (TANLA or LTIM look strongest among the candidates).
-
-you: /quit
-```
+| Method | Path | Description |
+|---|---|---|
+| GET | `/login` | Sign-in page with Google button |
+| GET | `/health` | Health check |
+| GET | `/api/auth/google/start` | Redirect to Google OAuth |
+| GET | `/api/auth/google/callback` | Browser OAuth callback → HTML page with JWT |
+| POST | `/api/auth/google/callback` | JSON OAuth callback (for JS frontends) |
+| GET | `/api/auth/me` | Current user info |
+| POST | `/api/auth/groww-credentials` | Link Groww API credentials to account |
+| GET | `/api/portfolio/holdings` | Holdings with sector + P&L |
+| GET | `/api/portfolio/risk` | Concentration / risk metrics |
+| GET | `/api/tools/technicals/{symbol}` | Live technical indicators |
+| GET | `/api/tools/fundamentals/{symbol}` | Live fundamentals from Screener |
+| GET | `/api/tools/news/{symbol}` | Recent Moneycontrol headlines |
+| POST | `/api/recommendations` | Start recommendation workflow (async job) |
+| GET | `/api/recommendations/{job_id}` | Poll job status |
+| WebSocket | `/api/chat/ws?token=<jwt>` | Streaming chat with tool calls |
 
 ## MCP integration (optional)
 
@@ -162,24 +237,26 @@ the same tools:
 }
 ```
 
-Then `claude /mcp` will show both servers; ask *"What sector am I
-over-exposed to?"* and the chat client will call
-`pennywise.portfolio_risk` directly.
-
 ## Configuration
 
-All knobs live in `.env`:
+All knobs live in `.env` (copy from `.env.example`):
 
 | Var | Default | Meaning |
 |---|---|---|
-| `GROWW_API_TOKEN` | — | Daily access token from Groww dashboard. |
-| `GROWW_API_KEY` / `GROWW_API_SECRET` | — | Alternative: PennyWise mints the daily token from these. |
 | `ANTHROPIC_API_KEY` | — | Required for `risk`, `recommend`, `chat`. |
+| `GROWW_API_TOKEN` | — | Pre-minted daily Groww token (alternative to running `pennywise login groww`). |
 | `PENNYWISE_LLM_MODEL` | `claude-opus-4-7` | Claude model id. Sonnet-class models also work and cost ~3× less. |
+| `PENNYWISE_REASONING_EFFORT` | `medium` | Adaptive-thinking effort for Synthesizer / Critic (`low` / `medium` / `high`). |
 | `PENNYWISE_HHI_FLAG` | `0.25` | HHI threshold for the "concentrated" flag. |
 | `PENNYWISE_TOP_NAME_FLAG` | `0.20` | Single-name weight that triggers a TRIM suggestion. |
 | `PENNYWISE_LARGE_CAP_FLOOR_CR` | `80000` | AMFI top-100 floor (H1 2025). |
 | `PENNYWISE_MID_CAP_FLOOR_CR` | `28000` | AMFI top-250 floor (H1 2025). |
+| `GOOGLE_CLIENT_ID` | — | Google OAuth client ID. |
+| `GOOGLE_CLIENT_SECRET` | — | Google OAuth client secret. |
+| `GOOGLE_REDIRECT_URI` | `http://localhost:8000/api/auth/google/callback` | Redirect URI registered in Google Cloud Console (API backend). For CLI, register `http://localhost:18765/callback` separately. |
+| `JWT_SECRET` | `pennywise-dev-secret-change-me` | JWT signing secret for the API backend. Change this in production. |
+| `DYNAMODB_ENDPOINT` | — | DynamoDB-local URL (`http://localhost:8042`); leave unset for real AWS. |
+| `CORS_ORIGINS` | `localhost:3000,5173` | Comma-separated allowed origins for the API. |
 
 Refresh the market-cap floors biannually from
 [amfiindia.com → Categorization of Stocks][amfi].
@@ -192,9 +269,8 @@ Refresh the market-cap floors biannually from
 uv run pytest -q
 ```
 
-50 tests, all offline — recorded HTTP fixtures, no live calls. Adding a
-new connector? Add a fixture under `tests/fixtures/` and a test that
-asserts the parser handles real responses.
+73 tests, all offline — mocked HTTP responses and inline HTML fixtures,
+no live calls.
 
 ## Project layout
 
@@ -203,6 +279,8 @@ pennywise/
 ├── cli.py                 # typer entrypoint
 ├── chat.py                # interactive REPL + tool definitions
 ├── config.py              # .env loading
+├── credentials.py         # ~/.pennywise/credentials.json store + TOTP generation
+├── login.py               # pennywise login groww / google flows
 ├── snapshot.py            # on-disk portfolio cache
 ├── tagging.py             # build_snapshot() — holdings + LTP + Screener tags
 ├── connectors/            # groww / screener / yfinance / moneycontrol
@@ -211,8 +289,16 @@ pennywise/
 │   ├── _llm.py            # shared structured-output helper (with reasoning)
 │   ├── strategy_synthesizer.py
 │   ├── strategy_critic.py
-│   └── ...
+│   └── …
 ├── graph/                 # LangGraph state + workflow wiring
+├── api/                   # FastAPI backend
+│   ├── app.py             # application factory + /login page
+│   ├── auth.py            # Google OAuth + JWT
+│   ├── db.py              # DynamoDB persistence
+│   ├── streaming.py       # WebSocket chat adapter
+│   ├── background.py      # thread-pool job runner
+│   ├── models.py          # Pydantic request/response schemas
+│   └── routes/            # auth, portfolio, tools, chat, recommendations
 ├── mcp/                   # FastMCP server exposing tools
 └── data/
     └── universe.csv       # static Nifty-universe candidate pool
@@ -222,8 +308,8 @@ pennywise/
 
 - [ ] Live AMFI category lookup instead of threshold-based mcap bucketing.
 - [ ] XIRR + dividend history (Groww publishes both via the portfolio API).
-- [ ] Save chat transcripts to `~/.pennywise/chats/` for replay.
 - [ ] Optional Streamlit dashboard for the chat surface.
+- [ ] Per-user snapshot persistence in the API (currently uses the shared CLI snapshot).
 
 ## License
 

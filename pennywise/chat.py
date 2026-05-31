@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -539,21 +540,47 @@ class ChatSession:
                 self.save()
                 return "\n".join(texts).strip() or "(no response)"
 
-            # Execute each tool the model requested and feed results back.
+            # Execute tools in parallel when Claude fires multiple in one turn.
+            # This is common for "should I buy INFY?" → fetch_technicals +
+            # fetch_fundamentals + fetch_news in parallel (~3-4s vs ~7-8s serial).
             tool_results = []
-            for tu in tool_uses:
+            if len(tool_uses) == 1:
+                tu = tool_uses[0]
                 if self.verbose:
                     print(f"  → tool: {tu.name}({dict(tu.input)})")
                 impl = TOOL_IMPLS.get(tu.name)
                 try:
                     result = impl(dict(tu.input)) if impl else {"error": f"unknown tool: {tu.name}"}
-                except Exception as exc:  # surface tool errors back to Claude
+                except Exception as exc:
                     result = {"error": f"{type(exc).__name__}: {exc}"}
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tu.id,
                     "content": json.dumps(result, default=str),
                 })
+            else:
+                # Parallel execution for multi-tool turns.
+                with ThreadPoolExecutor(max_workers=min(4, len(tool_uses))) as pool:
+                    def _run_tool(tu_block):
+                        if self.verbose:
+                            print(f"  → tool: {tu_block.name}({dict(tu_block.input)})")
+                        impl = TOOL_IMPLS.get(tu_block.name)
+                        try:
+                            return impl(dict(tu_block.input)) if impl else {"error": f"unknown tool: {tu_block.name}"}
+                        except Exception as exc:
+                            return {"error": f"{type(exc).__name__}: {exc}"}
+                    futs = {pool.submit(_run_tool, tu): tu for tu in tool_uses}
+                    for fut in as_completed(futs):
+                        tu = futs[fut]
+                        try:
+                            result = fut.result()
+                        except Exception as exc:
+                            result = {"error": f"{type(exc).__name__}: {exc}"}
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tu.id,
+                            "content": json.dumps(result, default=str),
+                        })
             self.history.append({"role": "user", "content": tool_results})
             # Persist after the round-trip so a crash before the next API
             # call still leaves us replay-able.
