@@ -36,6 +36,27 @@ your equity and the broad market. PennyWise does — and shows its work.
 ## Architecture
 
 ```mermaid
+graph LR
+    subgraph CLI ["CLI  (single user)"]
+        A1[pennywise login groww] --> A2[credentials.json<br/>auto-refresh at 6 AM IST]
+        A2 --> A3[snapshot · risk · recommend · chat]
+    end
+
+    subgraph API ["API  (multi-user · Docker)"]
+        B1[Google OAuth] --> B2[DynamoDB<br/>users · sessions · jobs]
+        B2 --> B3[FastAPI + JWT]
+        B3 --> B4[WebSocket chat]
+    end
+
+    A3 & B3 --> C[Connectors<br/>Groww · Screener · yfinance · Moneycontrol]
+    C --> D[Analytics<br/>HHI · sector · mcap · gaps]
+    D --> E[LangGraph workflow]
+    E --> F[Claude — Synthesizer + Critic<br/>extended thinking]
+```
+
+### Recommendation pipeline
+
+```mermaid
 graph TD
     A[Snapshot<br/>Groww holdings + Screener tags] --> B[Risk engine<br/>HHI · sector · mcap · gaps]
     B --> C[Candidate picker<br/>Nifty 500 universe]
@@ -51,7 +72,11 @@ graph TD
     style H fill:#7c5cff,color:#fff
 ```
 
-Two design choices worth calling out:
+Three design choices worth calling out:
+
+- **Two surfaces.** The CLI is single-user and only needs Groww credentials
+  (`pennywise login groww`, run once). The API/Docker backend is multi-user
+  and uses Google OAuth → PennyWise JWT for identity.
 
 - **Reasoning models on the analytical nodes.** Synthesis and critique
   are the two places where Claude has to weigh many signals at once; we
