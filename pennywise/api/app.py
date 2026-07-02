@@ -22,6 +22,7 @@ from slowapi.errors import RateLimitExceeded
 
 from pennywise.api import auth as auth_module
 from pennywise.api import db
+from pennywise.api import groww_creds
 from pennywise.api.logging_config import configure_logging
 from pennywise.api.ratelimit import limiter
 from pennywise.api.routes import auth, chat, portfolio, recommendations, tools
@@ -33,8 +34,9 @@ logger = logging.getLogger("pennywise.api")
 async def _lifespan(app: FastAPI):
     """Startup / shutdown hooks."""
     configure_logging()
-    # Refuse to boot with insecure auth config in staging/prod.
+    # Refuse to boot with insecure auth/crypto config in staging/prod.
     auth_module.validate_auth_config()
+    groww_creds.validate_crypto_config()
     # Create DynamoDB tables only against dynamodb-local. In deployed
     # environments tables are provisioned out of band (Terraform /
     # `python -m pennywise.api.db --create`), never on web boot.
@@ -55,6 +57,22 @@ def create_app() -> FastAPI:
     # ── Rate limiting ────────────────────────────────────────────────
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    # ── No portfolio source → 409 with an actionable message ────────
+    @app.exception_handler(groww_creds.GrowwNotLinked)
+    async def _not_linked(request: Request, exc: groww_creds.GrowwNotLinked):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": (
+                    "No portfolio available. Connect your Groww account "
+                    "(POST /api/auth/groww-credentials) or upload a holdings "
+                    "statement (POST /api/portfolio/upload) first."
+                )
+            },
+        )
 
     # ── CORS ─────────────────────────────────────────────────────────
     allowed_origins = os.getenv(

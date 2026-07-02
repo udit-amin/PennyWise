@@ -32,6 +32,14 @@ resource "aws_secretsmanager_secret" "google_client_secret" {
   name = "${local.name}-google-client-secret"
 }
 
+# Fernet key encrypting per-user Groww credentials at rest in DynamoDB.
+# Generated here (44-char urlsafe base64 of 32 bytes is what Fernet expects,
+# so we mint it out of band and store it, same as the Google secrets):
+#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+resource "aws_secretsmanager_secret" "credentials_key" {
+  name = "${local.name}-credentials-key"
+}
+
 locals {
   # Secrets surfaced to the container, mapped to the env var names the app reads.
   container_secrets = {
@@ -39,6 +47,7 @@ locals {
     ANTHROPIC_API_KEY    = aws_secretsmanager_secret.anthropic_api_key.arn
     GOOGLE_CLIENT_ID     = aws_secretsmanager_secret.google_client_id.arn
     GOOGLE_CLIENT_SECRET = aws_secretsmanager_secret.google_client_secret.arn
+    PENNYWISE_CRED_KEY   = aws_secretsmanager_secret.credentials_key.arn
   }
   secret_arns = values(local.container_secrets)
 }

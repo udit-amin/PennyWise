@@ -67,9 +67,23 @@ def build_graph():
     return g.compile()
 
 
-def run_pennywise(focus: str = "all") -> dict:
+def run_pennywise(
+    focus: str = "all",
+    *,
+    initial_holdings: list[dict] | None = None,
+    initial_positions: list[dict] | None = None,
+) -> dict:
+    """Run the full workflow.
+
+    ``initial_holdings``/``initial_positions`` let the API seed a per-user
+    portfolio so the entry node never touches local/shared credentials; when
+    omitted (CLI path) the portfolio_manager node fetches from Groww itself.
+    """
     graph = build_graph()
     initial: PortfolioState = {"focus": focus, "revision_count": 0}
+    if initial_holdings is not None:
+        initial["holdings"] = list(initial_holdings)
+        initial["positions"] = list(initial_positions or [])
     final = graph.invoke(initial)
     return {
         "focus": focus,

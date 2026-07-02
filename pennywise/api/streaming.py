@@ -32,13 +32,17 @@ async def stream_chat_turn(
     user_text: str,
     session_id: str,
     *,
+    tool_impls: dict | None = None,
     max_iterations: int = 6,
 ) -> list[dict]:
     """Run one chat turn with streaming.
 
     Mutates and returns ``history`` with the new user + assistant turns appended.
     Sends streaming events over ``ws`` as the model produces output.
+    ``tool_impls`` carries the per-user tool table (see chat.make_tool_impls);
+    defaults to the CLI table for backwards compatibility.
     """
+    impls = tool_impls if tool_impls is not None else TOOL_IMPLS
     settings = load()
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 
@@ -109,7 +113,7 @@ async def stream_chat_turn(
                 "input": dict(tu.input),
             })
             tasks.append((tu, asyncio.get_event_loop().run_in_executor(
-                None, _execute_tool, tu.name, dict(tu.input)
+                None, _execute_tool, impls, tu.name, dict(tu.input)
             )))
 
         for tu, task in tasks:
@@ -133,9 +137,9 @@ async def stream_chat_turn(
     return history
 
 
-def _execute_tool(name: str, kwargs: dict) -> dict:
+def _execute_tool(impls: dict, name: str, kwargs: dict) -> dict:
     """Execute a tool implementation synchronously (runs in thread pool)."""
-    impl = TOOL_IMPLS.get(name)
+    impl = impls.get(name)
     try:
         return impl(kwargs) if impl else {"error": f"unknown tool: {name}"}
     except Exception as exc:

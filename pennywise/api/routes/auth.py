@@ -18,6 +18,7 @@ from pennywise.api.models import (
     AuthResponse,
     GoogleCallbackRequest,
     GrowwCredentialRequest,
+    GrowwStatusResponse,
     UserResponse,
 )
 
@@ -221,23 +222,61 @@ async def me(user: dict = Depends(current_user)) -> UserResponse:
     )
 
 
+def _verify_groww_credentials(creds: dict) -> None:
+    """Cheap authenticated Groww call so we reject bad credentials with a 400
+    instead of storing garbage. Sync — run in a worker thread."""
+    from pennywise.connectors.groww import GrowwConnector, exchange_for_access_token
+
+    if creds.get("api_key") and creds.get("api_secret"):
+        exchange_for_access_token(creds["api_key"], creds["api_secret"])
+    elif creds.get("token"):
+        with GrowwConnector(token=creds["token"]) as g:
+            g.holdings()
+
+
 @router.post("/groww-credentials")
 async def save_groww_credentials(
     body: GrowwCredentialRequest,
     user: dict = Depends(current_user),
 ) -> dict:
-    """Store Groww API credentials in DynamoDB."""
-    table = db._table("users")
-    creds = {}
-    if body.token:
-        creds["groww_token"] = body.token
-    if body.api_key:
-        creds["groww_api_key"] = body.api_key
-    if body.api_secret:
-        creds["groww_api_secret"] = body.api_secret
-    table.update_item(
-        Key={"user_id": user["user_id"]},
-        UpdateExpression="SET groww_credentials = :c",
-        ExpressionAttributeValues={":c": creds},
+    """Verify and store Groww API credentials (encrypted at rest)."""
+    import asyncio
+
+    from pennywise.api.groww_creds import encrypt_credentials
+
+    creds = {
+        k: v
+        for k, v in (("token", body.token), ("api_key", body.api_key), ("api_secret", body.api_secret))
+        if v
+    }
+    try:
+        await asyncio.to_thread(_verify_groww_credentials, creds)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Groww rejected these credentials. Check the API key/secret "
+            "(or token) in your Groww trading API settings and try again.",
+        )
+
+    await asyncio.to_thread(
+        db.set_user_groww_credentials, user["user_id"], encrypt_credentials(creds)
     )
     return {"status": "saved"}
+
+
+@router.get("/groww-credentials/status", response_model=GrowwStatusResponse)
+async def groww_credentials_status(
+    user: dict = Depends(current_user),
+) -> GrowwStatusResponse:
+    """Whether this user has a portfolio source, and which kind."""
+    import asyncio
+
+    linked = bool(user.get("groww_credentials_enc") or user.get("groww_credentials"))
+    snapshot = await asyncio.to_thread(db.load_snapshot, user["user_id"])
+    if snapshot:
+        return GrowwStatusResponse(
+            linked=True,
+            source="groww" if linked else snapshot.get("source", "upload"),
+            as_of=snapshot.get("fetched_at") or None,
+        )
+    return GrowwStatusResponse(linked=linked, source="groww" if linked else None)

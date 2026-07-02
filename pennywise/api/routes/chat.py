@@ -8,9 +8,11 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from pennywise.api import db
 from pennywise.api.auth import current_user, decode_jwt
+from pennywise.api.groww_creds import snapshot_provider
 from pennywise.api.models import ChatSessionSummary
 from pennywise.api.ratelimit import allow_chat_turn
 from pennywise.api.streaming import stream_chat_turn
+from pennywise.chat import make_tool_impls
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -79,6 +81,10 @@ async def chat_ws(ws: WebSocket):
     user_id = user["user_id"]
     await ws.accept()
 
+    # Per-user tool table: portfolio tools read THIS user's snapshot (and
+    # degrade to a groww_not_linked result when they have no portfolio).
+    tool_impls = make_tool_impls(snapshot_provider(user))
+
     # Per-connection session state: {session_id: history_list}
     sessions: dict[str, list[dict]] = {}
 
@@ -128,7 +134,9 @@ async def chat_ws(ws: WebSocket):
 
             # ── run the chat turn ──
             try:
-                history = await stream_chat_turn(ws, history, text, session_id)
+                history = await stream_chat_turn(
+                    ws, history, text, session_id, tool_impls=tool_impls
+                )
                 sessions[session_id] = history
 
                 # Persist to DynamoDB

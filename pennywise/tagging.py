@@ -39,21 +39,40 @@ def _tag_one(holding: dict, screener: ScreenerScraper) -> dict:
     return holding
 
 
-def build_snapshot(*, progress: callable | None = None) -> Snapshot:
-    """Fetch live holdings, attach LTP, tag with sector / industry / mcap.
+def tag_holdings(holdings: list[dict], *, progress: callable | None = None) -> list[dict]:
+    """Tag holdings rows in place with sector / industry / market cap from
+    Screener. Shared by the Groww fetch path and the statement-upload path.
 
     ``progress`` is called with (idx, total, symbol) after each Screener fetch
     so the CLI can render a progress bar without coupling this module to rich.
     """
-    with GrowwConnector() as g:
-        holdings = g.holdings_with_ltp()
-        positions = g.positions()
-
     with ScreenerScraper() as scr:
         total = len(holdings)
         for i, h in enumerate(holdings, 1):
             _tag_one(h, scr)
             if progress:
                 progress(i, total, h.get("symbol"))
+    return holdings
 
+
+def build_snapshot(
+    *,
+    connector: GrowwConnector | None = None,
+    progress: callable | None = None,
+) -> Snapshot:
+    """Fetch live holdings, attach LTP, tag with sector / industry / mcap.
+
+    ``connector`` lets the API pass a per-user authenticated GrowwConnector
+    (caller manages its lifecycle). When omitted — the CLI path — a connector
+    is built from local credentials and closed here.
+    """
+    if connector is None:
+        with GrowwConnector() as g:
+            holdings = g.holdings_with_ltp()
+            positions = g.positions()
+    else:
+        holdings = connector.holdings_with_ltp()
+        positions = connector.positions()
+
+    tag_holdings(holdings, progress=progress)
     return Snapshot(fetched_at=stamp_now(), holdings=holdings, positions=positions)
