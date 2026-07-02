@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -14,6 +15,8 @@ from pennywise.api.models import ChatSessionSummary
 from pennywise.api.ratelimit import allow_chat_turn
 from pennywise.api.streaming import stream_chat_turn
 from pennywise.chat import make_tool_impls
+
+logger = logging.getLogger("pennywise.api.chat")
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -165,9 +168,13 @@ async def chat_ws(ws: WebSocket):
                     "last_user_message": text,
                 })
             except Exception as exc:
+                logger.exception(
+                    "chat turn failed: %s", exc,
+                    extra={"user_id": user_id, "session_id": session_id},
+                )
                 await ws.send_json({
                     "type": "error",
-                    "detail": f"{type(exc).__name__}: {exc}",
+                    "detail": "Internal error while processing this turn.",
                 })
 
     except WebSocketDisconnect:

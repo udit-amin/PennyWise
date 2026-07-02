@@ -11,6 +11,7 @@ Flow:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -25,6 +26,8 @@ from google.oauth2 import id_token as google_id_token
 from jose import JWTError, jwt
 
 from pennywise.api import db
+
+logger = logging.getLogger("pennywise.api.auth")
 
 _DEV_JWT_SECRET = "pennywise-dev-secret-change-me"
 
@@ -136,7 +139,10 @@ async def exchange_google_code(code: str, redirect_uri: str) -> dict:
             "redirect_uri": redirect_uri,
         })
     if resp.status_code != 200:
-        raise HTTPException(status_code=400, detail=f"Google token exchange failed: {resp.text}")
+        # Google's error body can carry diagnostic detail — log it, never
+        # echo it to the client.
+        logger.warning("Google token exchange failed (%s): %s", resp.status_code, resp.text)
+        raise HTTPException(status_code=400, detail="Google token exchange failed.")
 
     tokens = resp.json()
     raw_id_token = tokens.get("id_token")
@@ -149,7 +155,8 @@ async def exchange_google_code(code: str, redirect_uri: str) -> dict:
             raw_id_token, google_requests.Request(), GOOGLE_CLIENT_ID
         )
     except ValueError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid Google ID token: {e}")
+        logger.warning("Google ID token verification failed: %s", e)
+        raise HTTPException(status_code=401, detail="Invalid Google ID token.")
 
     return _profile_from_id_token(info)
 
@@ -188,10 +195,11 @@ def decode_jwt(token: str) -> dict:
     """Decode and verify a PennyWise JWT. Raises on expiry/tampering."""
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-    except JWTError as e:
+    except JWTError:
+        # JWTError strings can echo token fragments — keep the detail generic.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {e}",
+            detail="Invalid or expired token.",
         )
 
 

@@ -42,4 +42,6 @@ USER app
 EXPOSE 8000
 
 # Production: no --reload. Worker count tunable via WEB_CONCURRENCY (default 2).
-CMD ["sh", "-c", "uvicorn pennywise.api.app:create_app --factory --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-2}"]
+# `exec` replaces the shell so SIGTERM reaches uvicorn directly — the ECS task
+# drains gracefully instead of being SIGKILLed after the stop timeout.
+CMD ["sh", "-c", "exec uvicorn pennywise.api.app:create_app --factory --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-2}"]

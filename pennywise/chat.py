@@ -49,6 +49,7 @@ from pennywise.agents.risk_analyzer import risk_analyzer_node
 from pennywise.config import load
 from pennywise.snapshot import Snapshot
 from pennywise.tagging import build_snapshot
+from pennywise.utils.ttl_cache import TTLCache
 
 SYSTEM = """You are PennyWise, an honest, plain-English portfolio advisor
 for a retail Indian investor on Groww (NSE/BSE).
@@ -313,10 +314,11 @@ def tool_list_recommendations(
 # ────────────────── live-data tools (cached per session) ──────────────────
 
 
-# Per-process caches so Claude doesn't pay the round-trip twice in one
-# conversation if it re-asks for the same ticker. Cleared by /new.
-_TECHNICALS_CACHE: dict[str, dict] = {}
-_FUNDAMENTALS_CACHE: dict[str, dict] = {}
+# Per-process market-data caches (ticker-keyed, shared across users by
+# design). Bounded + TTL'd so a long-running server neither grows without
+# limit nor serves stale prices forever. Cleared by /new.
+_TECHNICALS_CACHE = TTLCache(maxsize=512, ttl_s=15 * 60)
+_FUNDAMENTALS_CACHE = TTLCache(maxsize=512, ttl_s=30 * 60)
 
 
 def _norm_symbol(symbol: str) -> str:

@@ -14,20 +14,45 @@ user-facing impact; see `git log` for the full commit history.
   workspace per environment (`staging`, `prod`); `dev` stays local.
 - **CI/CD via GitHub Actions** — tests on every PR; build-once images promoted
   staging → prod, prod gated behind a manual approval Environment.
+- **Multi-user portfolios.** Each API user connects their own Groww account
+  (`POST /api/auth/groww-credentials`, verified against Groww and encrypted
+  at rest) or uploads a broker holdings statement
+  (`POST /api/portfolio/upload`, CSV/XLSX) as a low-friction alternative.
+  `GET /api/auth/groww-credentials/status` reports linkage. Users without a
+  portfolio get generic market-data chat instead of an error; portfolio
+  endpoints return 409 with next steps.
 - `/health/ready` readiness probe (checks DynamoDB) alongside the existing
   `/health` liveness probe.
-- Per-user rate limiting on the recommendation and chat endpoints to cap LLM
-  spend.
+- Per-user rate limiting on the recommendation and chat endpoints (shared
+  across workers via a DynamoDB counter) to cap LLM spend.
 - `PENNYWISE_ENV` setting; the API now refuses to start in staging/prod with a
-  default/missing `JWT_SECRET` or missing Google OAuth credentials.
+  default/missing `JWT_SECRET`, missing Google OAuth credentials, or a missing
+  `PENNYWISE_CRED_KEY` (encrypts per-user Groww credentials).
 - JSON structured logging with request ids; background job lifecycle logging.
+- OAuth CSRF protection (signed state parameter) and a `redirect_uri`
+  allowlist.
+- Background jobs survive restarts cleanly: heartbeats, a wall-clock timeout,
+  and startup reconciliation of orphaned jobs (previously stuck "running"
+  forever after any deploy).
 
 ### Changed
 - Default LLM model is now `claude-opus-4-8`.
-- Hardened container: multi-stage build, non-root user, no hot-reload in prod.
+- Hardened container: multi-stage build, non-root user, no hot-reload in prod,
+  `exec` in the entrypoint so `SIGTERM` reaches uvicorn for graceful shutdown.
 - CLI no longer requires Google login — `pennywise login groww` is the only
   prerequisite for all CLI commands. Google OAuth is used only by the API/web
   backend.
+- Anthropic API calls now share a connection-pooled client with retries and
+  timeouts instead of building a fresh client per call; chat tool execution
+  is individually timeout-bounded so a hung scraper can't stall a session.
+- **Breaking (chat WebSocket protocol):** JWT auth moved from a `?token=`
+  query parameter (recorded in ALB access logs) to a first-frame
+  `{"type": "auth", "token": "..."}` message.
+
+### Fixed
+- DynamoDB calls no longer block the event loop — they run in worker threads.
+- Risk calculations no longer crash on holdings with a missing live price
+  (`ltp=None`), which uploaded statements and failed LTP lookups can produce.
 
 ---
 
