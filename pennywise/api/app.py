@@ -42,6 +42,18 @@ async def _lifespan(app: FastAPI):
     # `python -m pennywise.api.db --create`), never on web boot.
     if os.getenv("DYNAMODB_ENDPOINT"):
         db.create_tables_if_not_exist()
+    # Fail jobs orphaned by the previous task/process. Best-effort — boot
+    # must never hinge on it (idempotent + safe across workers).
+    import asyncio
+
+    from pennywise.api import background
+
+    try:
+        reconciled = await asyncio.to_thread(background.reconcile_stale_jobs)
+        if reconciled:
+            logger.info("reconciled %d orphaned background job(s)", reconciled)
+    except Exception as exc:
+        logger.warning("stale-job reconciliation failed: %s", exc)
     yield
 
 

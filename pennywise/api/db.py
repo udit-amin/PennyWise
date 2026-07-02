@@ -241,18 +241,35 @@ def create_job(user_id: str, job_type: str, params: dict | None = None) -> str:
     return job_id
 
 
-def update_job(user_id: str, job_id: str, *, status: str, result: dict | None = None, error: str | None = None) -> None:
+def update_job(
+    user_id: str,
+    job_id: str,
+    *,
+    status: str,
+    result: dict | None = None,
+    error: str | None = None,
+    started_at: str | None = None,
+    heartbeat_at: str | None = None,
+) -> None:
     table = _table("jobs")
+    sets = ["#s = :s", "#r = :r", "#e = :e", "updated_at = :u"]
+    values: dict[str, Any] = {
+        ":s": status,
+        ":r": json.dumps(result, default=str) if result else None,
+        ":e": error,
+        ":u": datetime.now(timezone.utc).isoformat(),
+    }
+    if started_at is not None:
+        sets.append("started_at = :st")
+        values[":st"] = started_at
+    if heartbeat_at is not None:
+        sets.append("heartbeat_at = :h")
+        values[":h"] = heartbeat_at
     table.update_item(
         Key={"user_id": user_id, "job_id": job_id},
-        UpdateExpression="SET #s = :s, #r = :r, #e = :e, updated_at = :u",
+        UpdateExpression="SET " + ", ".join(sets),
         ExpressionAttributeNames={"#s": "status", "#r": "result", "#e": "error"},
-        ExpressionAttributeValues={
-            ":s": status,
-            ":r": json.dumps(result, default=str) if result else None,
-            ":e": error,
-            ":u": datetime.now(timezone.utc).isoformat(),
-        },
+        ExpressionAttributeValues=values,
     )
 
 
