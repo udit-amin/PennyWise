@@ -1,6 +1,7 @@
 """Auth routes: Google OAuth login + user info."""
 from __future__ import annotations
 
+import asyncio
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -175,7 +176,8 @@ async def google_callback_browser(
             _ERROR_HTML.format(detail=exc.detail), status_code=exc.status_code
         )
 
-    user = db.create_user(
+    user = await asyncio.to_thread(
+        db.create_user,
         email=info["email"],
         name=info.get("name"),
         picture=info.get("picture"),
@@ -196,7 +198,8 @@ async def get_google_url(redirect_uri: str = Query(...)) -> dict:
 async def google_callback_api(body: GoogleCallbackRequest) -> AuthResponse:
     """Exchange Google auth code for a PennyWise JWT (JSON API for frontends)."""
     info = await exchange_google_code(body.code, body.redirect_uri)
-    user = db.create_user(
+    user = await asyncio.to_thread(
+        db.create_user,
         email=info["email"],
         name=info.get("name"),
         picture=info.get("picture"),
@@ -240,8 +243,6 @@ async def save_groww_credentials(
     user: dict = Depends(current_user),
 ) -> dict:
     """Verify and store Groww API credentials (encrypted at rest)."""
-    import asyncio
-
     from pennywise.api.groww_creds import encrypt_credentials
 
     creds = {
@@ -269,8 +270,6 @@ async def groww_credentials_status(
     user: dict = Depends(current_user),
 ) -> GrowwStatusResponse:
     """Whether this user has a portfolio source, and which kind."""
-    import asyncio
-
     linked = bool(user.get("groww_credentials_enc") or user.get("groww_credentials"))
     snapshot = await asyncio.to_thread(db.load_snapshot, user["user_id"])
     if snapshot:

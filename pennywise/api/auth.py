@@ -10,6 +10,7 @@ Flow:
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -149,9 +150,12 @@ def decode_jwt(token: str) -> dict:
 async def current_user(
     creds: HTTPAuthorizationCredentials = Depends(security),
 ) -> dict:
-    """Dependency that extracts + validates the JWT and returns the user dict."""
+    """Dependency that extracts + validates the JWT and returns the user dict.
+
+    The DynamoDB lookup runs in a worker thread — this dependency executes on
+    every authenticated request and must not block the event loop."""
     payload = decode_jwt(creds.credentials)
-    user = db.get_user(payload["sub"])
+    user = await asyncio.to_thread(db.get_user, payload["sub"])
     if not user:
         raise HTTPException(status_code=401, detail="User not found.")
     return user

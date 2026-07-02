@@ -1,6 +1,7 @@
 """WebSocket chat endpoint + session management."""
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 
@@ -25,7 +26,7 @@ async def list_sessions(
     user: dict = Depends(current_user),
 ) -> list[ChatSessionSummary]:
     """List the user's recent chat sessions."""
-    items = db.list_sessions(user["user_id"])
+    items = await asyncio.to_thread(db.list_sessions, user["user_id"])
     return [
         ChatSessionSummary(
             id=it["session_id"],
@@ -43,7 +44,7 @@ async def delete_session(
     user: dict = Depends(current_user),
 ) -> dict:
     """Delete a chat session."""
-    db.delete_session(user["user_id"], session_id)
+    await asyncio.to_thread(db.delete_session, user["user_id"], session_id)
     return {"status": "deleted"}
 
 
@@ -73,7 +74,7 @@ async def chat_ws(ws: WebSocket):
         await ws.close(code=4001, reason="Invalid or expired token")
         return
 
-    user = db.get_user(payload["sub"])
+    user = await asyncio.to_thread(db.get_user, payload["sub"])
     if not user:
         await ws.close(code=4001, reason="User not found")
         return
@@ -120,7 +121,7 @@ async def chat_ws(ws: WebSocket):
                 history = sessions[session_id]
             elif session_id:
                 # Try loading from DynamoDB
-                saved = db.load_session(user_id, session_id)
+                saved = await asyncio.to_thread(db.load_session, user_id, session_id)
                 if saved:
                     history = saved.get("history", [])
                 else:
@@ -140,7 +141,7 @@ async def chat_ws(ws: WebSocket):
                 sessions[session_id] = history
 
                 # Persist to DynamoDB
-                db.save_session(user_id, session_id, {
+                await asyncio.to_thread(db.save_session, user_id, session_id, {
                     "history": history,
                     "started_at": session_id,
                     "last_user_message": text,

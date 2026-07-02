@@ -1,6 +1,8 @@
 """Background recommendation workflow endpoint."""
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from pennywise.api import db
@@ -26,14 +28,14 @@ async def start_recommendations(
     This takes 30-100 seconds, so it runs as a background job.
     Poll ``GET /api/recommendations/{job_id}`` for status.
     """
-    import asyncio
-
     # Fail fast with a 409 instead of a background job that's doomed.
     if not await asyncio.to_thread(has_portfolio_source, user):
         raise GrowwNotLinked()
 
     user_id = user["user_id"]
-    job_id = db.create_job(user_id, "recommendations", {"focus": body.focus})
+    job_id = await asyncio.to_thread(
+        db.create_job, user_id, "recommendations", {"focus": body.focus}
+    )
     get_snapshot = snapshot_provider(user)
 
     def _run() -> dict:
@@ -55,7 +57,7 @@ async def get_recommendation_status(
     user: dict = Depends(current_user),
 ) -> JobStatus:
     """Poll the status of a recommendation job."""
-    job = db.get_job(user["user_id"], job_id)
+    job = await asyncio.to_thread(db.get_job, user["user_id"], job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return JobStatus(

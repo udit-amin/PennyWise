@@ -119,8 +119,10 @@ def create_app() -> FastAPI:
     async def health_ready():
         """Readiness — the process can reach DynamoDB. Used by the ALB
         target group so we don't route to a task that can't serve."""
+        import asyncio
+
         try:
-            db.ping()
+            await asyncio.to_thread(db.ping)
         except Exception as exc:  # pragma: no cover - exercised via integration
             logger.warning("readiness check failed: %s", exc)
             from fastapi.responses import JSONResponse
