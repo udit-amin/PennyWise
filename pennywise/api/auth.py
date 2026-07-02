@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any
 from urllib.parse import urlencode
@@ -68,8 +69,45 @@ def validate_auth_config() -> None:
 
 # ── Google OAuth ──────────────────────────────────────────────────────
 
+OAUTH_STATE_TTL_MINUTES = 10
 
-def google_auth_url(redirect_uri: str) -> str:
+
+def create_oauth_state() -> str:
+    """Mint a self-validating CSRF state token (RFC 6749 §10.12).
+
+    Signed with the existing JWT secret, so it verifies statelessly across
+    all workers/tasks — no server-side session store needed."""
+    payload = {
+        "purpose": "oauth_state",
+        "nonce": uuid.uuid4().hex,
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=OAUTH_STATE_TTL_MINUTES),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def verify_oauth_state(state: str | None) -> None:
+    """Raise 400 unless ``state`` is one we minted recently."""
+    detail = "Invalid or expired OAuth state — restart the sign-in flow."
+    if not state:
+        raise HTTPException(status_code=400, detail="Missing OAuth state parameter.")
+    try:
+        payload = jwt.decode(state, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=400, detail=detail)
+    if payload.get("purpose") != "oauth_state":
+        raise HTTPException(status_code=400, detail=detail)
+
+
+def validate_redirect_uri(uri: str) -> None:
+    """Exact-match the redirect_uri against the configured allowlist. A
+    client-chosen redirect_uri would let an attacker receive the token."""
+    from pennywise import config
+
+    if uri not in config.load().allowed_redirect_uris:
+        raise HTTPException(status_code=400, detail="redirect_uri is not allowed.")
+
+
+def google_auth_url(redirect_uri: str, state: str) -> str:
     """Build the Google OAuth authorization URL."""
     params = {
         "client_id": GOOGLE_CLIENT_ID,
@@ -78,6 +116,7 @@ def google_auth_url(redirect_uri: str) -> str:
         "scope": "openid email profile",
         "access_type": "offline",
         "prompt": "consent",
+        "state": state,
     }
     return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
 
@@ -112,8 +151,20 @@ async def exchange_google_code(code: str, redirect_uri: str) -> dict:
     except ValueError as e:
         raise HTTPException(status_code=401, detail=f"Invalid Google ID token: {e}")
 
+    return _profile_from_id_token(info)
+
+
+def _profile_from_id_token(info: dict) -> dict:
+    """Extract the user profile, rejecting tokens without a verified email —
+    the email is our user identity key (users table email-index)."""
+    email = info.get("email")
+    if not email or not info.get("email_verified", False):
+        raise HTTPException(
+            status_code=401,
+            detail="Google account did not provide a verified email address.",
+        )
     return {
-        "email": info["email"],
+        "email": email,
         "name": info.get("name"),
         "picture": info.get("picture"),
     }

@@ -92,6 +92,12 @@ resource "aws_ecs_task_definition" "app" {
       { name = "PENNYWISE_LLM_MODEL", value = var.llm_model },
       { name = "PENNYWISE_REASONING_EFFORT", value = var.reasoning_effort },
       { name = "GOOGLE_REDIRECT_URI", value = local.enable_dns ? "https://${var.domain_name}/api/auth/google/callback" : "" },
+      # OAuth redirect allowlist — the registered API callback plus the
+      # frontend callback derived from the first CORS origin.
+      { name = "PENNYWISE_ALLOWED_REDIRECT_URIS", value = local.enable_dns ? join(",", [
+        "https://${var.domain_name}/api/auth/google/callback",
+        "${split(",", var.cors_origins)[0]}/auth/callback",
+      ]) : "" },
     ]
 
     secrets = [for k, arn in local.container_secrets : { name = k, valueFrom = arn }]

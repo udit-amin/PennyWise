@@ -4,17 +4,24 @@ from __future__ import annotations
 import asyncio
 import os
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from pennywise.api import db
 from pennywise.api.auth import (
     GOOGLE_CLIENT_ID,
     create_jwt,
+    create_oauth_state,
     current_user,
     exchange_google_code,
     google_auth_url,
+    validate_redirect_uri,
+    verify_oauth_state,
 )
+from pennywise.api.ratelimit import limiter
+
+_AUTH_RATE_LIMIT = "10/minute"
+_STATE_COOKIE = "pw_oauth_state"
 from pennywise.api.models import (
     AuthResponse,
     GoogleCallbackRequest,
@@ -135,25 +142,42 @@ h1{{color:#f87171;margin-bottom:12px}}a{{color:#60a5fa}}</style></head>
 # ── Routes ────────────────────────────────────────────────────────────
 
 
-@router.get("/google/start", response_class=HTMLResponse, include_in_schema=False)
-async def google_start() -> HTMLResponse:
-    """Redirect the browser directly to Google OAuth (used by the login page)."""
+@router.get("/google/start", include_in_schema=False)
+@limiter.limit(_AUTH_RATE_LIMIT)
+async def google_start(request: Request) -> RedirectResponse:
+    """Redirect the browser to Google OAuth (used by the login page).
+
+    Sets the CSRF state as an HttpOnly cookie; the callback requires the
+    query param and cookie to match (double-submit) AND the state signature
+    to verify.
+    """
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(
             status_code=500,
             detail="GOOGLE_CLIENT_ID is not configured on this server.",
         )
-    url = google_auth_url(_GOOGLE_REDIRECT_URI)
-    return HTMLResponse(
-        content=f'<html><head><meta http-equiv="refresh" content="0;url={url}"></head></html>',
-        status_code=200,
+    from pennywise import config
+
+    state = create_oauth_state()
+    response = RedirectResponse(google_auth_url(_GOOGLE_REDIRECT_URI, state), status_code=302)
+    response.set_cookie(
+        _STATE_COOKIE,
+        state,
+        max_age=600,
+        httponly=True,
+        samesite="lax",
+        secure=config.load().is_prod_like,
     )
+    return response
 
 
 @router.get("/google/callback", response_class=HTMLResponse)
+@limiter.limit(_AUTH_RATE_LIMIT)
 async def google_callback_browser(
+    request: Request,
     code: str | None = Query(default=None),
     error: str | None = Query(default=None),
+    state: str | None = Query(default=None),
 ) -> HTMLResponse:
     """Browser-facing OAuth callback (Google redirects here after login).
 
@@ -169,7 +193,14 @@ async def google_callback_browser(
             _ERROR_HTML.format(detail="No authorization code received."), status_code=400
         )
 
+    cookie_state = request.cookies.get(_STATE_COOKIE)
+    if not state or not cookie_state or state != cookie_state:
+        return HTMLResponse(
+            _ERROR_HTML.format(detail="Sign-in session mismatch — please try again."),
+            status_code=400,
+        )
     try:
+        verify_oauth_state(state)
         info = await exchange_google_code(code, _GOOGLE_REDIRECT_URI)
     except HTTPException as exc:
         return HTMLResponse(
@@ -183,20 +214,28 @@ async def google_callback_browser(
         picture=info.get("picture"),
     )
     token = create_jwt(user["user_id"], user["email"])
-    return HTMLResponse(
-        _SUCCESS_HTML.format(email=user["email"], token=token)
-    )
+    response = HTMLResponse(_SUCCESS_HTML.format(email=user["email"], token=token))
+    response.delete_cookie(_STATE_COOKIE)
+    return response
 
 
 @router.get("/google/url")
-async def get_google_url(redirect_uri: str = Query(...)) -> dict:
-    """Return the Google OAuth URL (for JS-driven flows)."""
-    return {"url": google_auth_url(redirect_uri)}
+@limiter.limit(_AUTH_RATE_LIMIT)
+async def get_google_url(request: Request, redirect_uri: str = Query(...)) -> dict:
+    """Return the Google OAuth URL + CSRF state (for JS-driven flows).
+
+    The frontend must echo ``state`` back in the POST callback."""
+    validate_redirect_uri(redirect_uri)
+    state = create_oauth_state()
+    return {"url": google_auth_url(redirect_uri, state), "state": state}
 
 
 @router.post("/google/callback", response_model=AuthResponse)
-async def google_callback_api(body: GoogleCallbackRequest) -> AuthResponse:
+@limiter.limit(_AUTH_RATE_LIMIT)
+async def google_callback_api(request: Request, body: GoogleCallbackRequest) -> AuthResponse:
     """Exchange Google auth code for a PennyWise JWT (JSON API for frontends)."""
+    validate_redirect_uri(body.redirect_uri)
+    verify_oauth_state(body.state)
     info = await exchange_google_code(body.code, body.redirect_uri)
     user = await asyncio.to_thread(
         db.create_user,
@@ -238,7 +277,9 @@ def _verify_groww_credentials(creds: dict) -> None:
 
 
 @router.post("/groww-credentials")
+@limiter.limit(_AUTH_RATE_LIMIT)
 async def save_groww_credentials(
+    request: Request,
     body: GrowwCredentialRequest,
     user: dict = Depends(current_user),
 ) -> dict:

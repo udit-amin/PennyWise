@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 class GoogleCallbackRequest(BaseModel):
     code: str = Field(..., description="Authorization code from Google OAuth redirect.")
     redirect_uri: str = Field(..., description="The redirect URI used in the OAuth flow.")
+    state: str = Field(..., description="CSRF state issued by GET /api/auth/google/url.")
 
 
 class AuthResponse(BaseModel):
