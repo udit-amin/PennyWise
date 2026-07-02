@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from pennywise.api import db
 from pennywise.api.auth import current_user, decode_jwt
 from pennywise.api.models import ChatSessionSummary
+from pennywise.api.ratelimit import allow_chat_turn
 from pennywise.api.streaming import stream_chat_turn
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -97,6 +98,13 @@ async def chat_ws(ws: WebSocket):
             text = (msg.get("text") or "").strip()
             if not text:
                 await ws.send_json({"type": "error", "detail": "Empty message"})
+                continue
+
+            if not allow_chat_turn(user_id):
+                await ws.send_json({
+                    "type": "error",
+                    "detail": "Rate limit exceeded — too many chat turns. Try again later.",
+                })
                 continue
 
             session_id = msg.get("session_id")

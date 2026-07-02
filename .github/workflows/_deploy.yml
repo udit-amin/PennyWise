@@ -1,0 +1,91 @@
+name: _deploy
+
+# Reusable deploy: render a new task-definition revision pointing at an image
+# tag, roll the ECS service, then smoke-test. Build-once-promote: staging
+# builds + pushes the image; prod calls this with build=false and the same SHA.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      image_tag:
+        required: true
+        type: string
+      build:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write   # GitHub OIDC → AWS
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+      ECS_TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY }}
+      CONTAINER_NAME: api
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        if: ${{ inputs.build }}
+        run: |
+          docker build -t "$ECR_REPOSITORY:${{ inputs.image_tag }}" .
+          docker push "$ECR_REPOSITORY:${{ inputs.image_tag }}"
+
+      - name: Verify image exists in ECR
+        run: |
+          aws ecr describe-images \
+            --repository-name "$(basename "$ECR_REPOSITORY")" \
+            --image-ids imageTag="${{ inputs.image_tag }}" >/dev/null
+
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "$ECS_TASK_FAMILY" \
+            --query 'taskDefinition' --output json > task-def.json
+
+      - name: Render new image into task definition
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ env.ECR_REPOSITORY }}:${{ inputs.image_tag }}
+
+      - name: Deploy to ECS (rolling, wait for stable)
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      - name: Smoke test
+        run: |
+          URL="${{ vars.API_URL }}"
+          echo "Probing $URL/health/ready"
+          for i in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/health/ready" || true)
+            if [ "$code" = "200" ]; then echo "ready"; exit 0; fi
+            echo "attempt $i: got $code, retrying"; sleep 10
+          done
+          echo "Service did not become ready"; exit 1

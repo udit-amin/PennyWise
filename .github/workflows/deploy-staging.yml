@@ -1,0 +1,32 @@
+name: Deploy staging
+
+# On merge to main: run tests, then build + push the image (tagged with the
+# git SHA) and roll the staging service. The same SHA is later promoted to prod.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --extra dev
+      - run: uv run pytest -q
+
+  deploy:
+    needs: test
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: staging
+      image_tag: ${{ github.sha }}
+      build: true
+    secrets: inherit

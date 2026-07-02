@@ -242,16 +242,21 @@ def cache_put(key: str, data: dict, ttl_seconds: int = 3600) -> None:
     })
 
 
-# ── Table creation (for local dev / tests) ────────────────────────────
+# ── Health ────────────────────────────────────────────────────────────
 
 
-def create_tables_if_not_exist() -> None:
-    """Create all DynamoDB tables. Idempotent — skips existing tables.
-    Used for local development with dynamodb-local and in tests."""
-    db = _client()
-    existing = [t.name for t in db.tables.all()]
+def ping() -> None:
+    """Cheap reachability check for the readiness probe. Raises on failure."""
+    _client().meta.client.describe_table(TableName=f"{TABLE_PREFIX}users")
 
-    tables = [
+
+# ── Table provisioning ────────────────────────────────────────────────
+
+
+def _table_specs() -> list[dict]:
+    """The canonical DynamoDB schema. Single source of truth shared by the
+    local creator and the prod provisioning entrypoint; Terraform mirrors it."""
+    return [
         {
             "TableName": f"{TABLE_PREFIX}users",
             "KeySchema": [{"AttributeName": "user_id", "KeyType": "HASH"}],
@@ -312,6 +317,57 @@ def create_tables_if_not_exist() -> None:
         },
     ]
 
-    for spec in tables:
+
+def ensure_tables(*, enable_ttl: bool = True) -> None:
+    """Create all DynamoDB tables and enable TTL on the cache table.
+
+    Idempotent — skips existing tables. This is the canonical provisioning
+    entrypoint, run as a one-shot deploy step
+    (``python -m pennywise.api.db --create``) against real AWS, and on startup
+    against dynamodb-local.
+    """
+    db = _client()
+    client = db.meta.client
+    existing = [t.name for t in db.tables.all()]
+
+    created = []
+    for spec in _table_specs():
         if spec["TableName"] not in existing:
             db.create_table(**spec)
+            created.append(spec["TableName"])
+
+    # Wait for newly-created tables to become ACTIVE before touching them.
+    for name in created:
+        client.get_waiter("table_exists").wait(TableName=name)
+
+    if enable_ttl:
+        cache_table = f"{TABLE_PREFIX}cache"
+        try:
+            desc = client.describe_time_to_live(TableName=cache_table)
+            status = desc["TimeToLiveDescription"]["TimeToLiveStatus"]
+            if status in ("DISABLED", "DISABLING"):
+                client.update_time_to_live(
+                    TableName=cache_table,
+                    TimeToLiveSpecification={"Enabled": True, "AttributeName": "ttl"},
+                )
+        except ClientError:
+            # dynamodb-local / partial IAM: TTL is best-effort, not fatal.
+            pass
+
+
+def create_tables_if_not_exist() -> None:
+    """Backwards-compatible alias used by local dev / tests."""
+    ensure_tables()
+
+
+if __name__ == "__main__":  # pragma: no cover - operational entrypoint
+    import argparse
+
+    parser = argparse.ArgumentParser(description="PennyWise DynamoDB admin")
+    parser.add_argument("--create", action="store_true", help="Create tables + enable TTL")
+    args = parser.parse_args()
+    if args.create:
+        ensure_tables()
+        print(f"Tables ensured (prefix={TABLE_PREFIX!r}).")
+    else:
+        parser.print_help()

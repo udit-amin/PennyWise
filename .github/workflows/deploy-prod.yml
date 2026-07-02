@@ -1,0 +1,45 @@
+name: Deploy prod
+
+# Promote an already-built image (same SHA that passed staging) to prod.
+# Triggered by a version tag, or manually with an explicit SHA. The `production`
+# GitHub Environment should have a required-reviewer protection rule so prod
+# never deploys without approval.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag (git SHA) to promote. Must already exist in ECR."
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.pick.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: pick
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            # Tag push: promote the image built for the tagged commit.
+            echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    needs: resolve
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: production
+      image_tag: ${{ needs.resolve.outputs.image_tag }}
+      build: false
+    secrets: inherit

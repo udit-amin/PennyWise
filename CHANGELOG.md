@@ -7,7 +7,24 @@ user-facing impact; see `git log` for the full commit history.
 
 ## Unreleased
 
+### Added
+- **Production deployment to AWS ECS/Fargate.** Terraform under `infra/`
+  provisions VPC, ECS Fargate service, ALB (HTTPS + WebSocket), DynamoDB
+  (PITR + SSE), Secrets Manager, and CloudWatch alarms, with a Terraform
+  workspace per environment (`staging`, `prod`); `dev` stays local.
+- **CI/CD via GitHub Actions** — tests on every PR; build-once images promoted
+  staging → prod, prod gated behind a manual approval Environment.
+- `/health/ready` readiness probe (checks DynamoDB) alongside the existing
+  `/health` liveness probe.
+- Per-user rate limiting on the recommendation and chat endpoints to cap LLM
+  spend.
+- `PENNYWISE_ENV` setting; the API now refuses to start in staging/prod with a
+  default/missing `JWT_SECRET` or missing Google OAuth credentials.
+- JSON structured logging with request ids; background job lifecycle logging.
+
 ### Changed
+- Default LLM model is now `claude-opus-4-8`.
+- Hardened container: multi-stage build, non-root user, no hot-reload in prod.
 - CLI no longer requires Google login — `pennywise login groww` is the only
   prerequisite for all CLI commands. Google OAuth is used only by the API/web
   backend.

@@ -24,9 +24,11 @@ from jose import JWTError, jwt
 
 from pennywise.api import db
 
+_DEV_JWT_SECRET = "pennywise-dev-secret-change-me"
+
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
-JWT_SECRET = os.getenv("JWT_SECRET", "pennywise-dev-secret-change-me")
+JWT_SECRET = os.getenv("JWT_SECRET", _DEV_JWT_SECRET)
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
 
@@ -34,6 +36,33 @@ GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 security = HTTPBearer()
+
+
+def validate_auth_config() -> None:
+    """Fail closed on insecure config in deployed environments.
+
+    Called at application startup. In ``staging``/``prod`` a missing or
+    default ``JWT_SECRET`` would let anyone forge tokens, and missing Google
+    OAuth credentials would silently break login — so we refuse to boot.
+    Dev keeps the convenient defaults.
+    """
+    from pennywise import config
+
+    if not config.load().is_prod_like:
+        return
+
+    errors: list[str] = []
+    if not JWT_SECRET or JWT_SECRET == _DEV_JWT_SECRET:
+        errors.append("JWT_SECRET is unset or the dev default — set a strong random secret.")
+    if not GOOGLE_CLIENT_ID:
+        errors.append("GOOGLE_CLIENT_ID is unset.")
+    if not GOOGLE_CLIENT_SECRET:
+        errors.append("GOOGLE_CLIENT_SECRET is unset.")
+    if errors:
+        raise RuntimeError(
+            "Refusing to start in a deployed environment with insecure auth config:\n  - "
+            + "\n  - ".join(errors)
+        )
 
 
 # ── Google OAuth ──────────────────────────────────────────────────────

@@ -1,19 +1,22 @@
 """Background recommendation workflow endpoint."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from pennywise.api import db
 from pennywise.api.auth import current_user
 from pennywise.api.background import submit_job
 from pennywise.api.models import JobStatus, RecommendRequest
+from pennywise.api.ratelimit import RECOMMENDATIONS_LIMIT, limiter
 from pennywise.graph.workflow import run_pennywise
 
 router = APIRouter(prefix="/api/recommendations", tags=["recommendations"])
 
 
 @router.post("", response_model=JobStatus)
+@limiter.limit(RECOMMENDATIONS_LIMIT)
 async def start_recommendations(
+    request: Request,
     body: RecommendRequest,
     user: dict = Depends(current_user),
 ) -> JobStatus:
