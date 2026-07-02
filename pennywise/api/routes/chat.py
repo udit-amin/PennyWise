@@ -51,21 +51,39 @@ async def delete_session(
 # ── WebSocket: streaming chat ────────────────────────────────────────
 
 
+AUTH_DEADLINE_S = 10
+
+
 @router.websocket("/ws")
 async def chat_ws(ws: WebSocket):
     """Streaming chat over WebSocket.
 
-    Auth: pass JWT as ``?token=<jwt>`` query param (WebSocket doesn't
-    support Authorization header in browsers).
+    Auth: connect, then send ``{"type": "auth", "token": "<jwt>"}`` as the
+    FIRST frame (within 10s). The server replies ``{"type": "auth_ok"}`` or
+    closes with code 4001. Tokens never ride the URL — query strings land in
+    ALB access logs.
 
-    Protocol (see ``pennywise.api.streaming`` docstring for full details):
+    Protocol after auth (see ``pennywise.api.streaming`` for full details):
       Client -> {"type": "message", "text": "...", "session_id": "..." | null}
       Server -> {"type": "tool_call" | "tool_result" | "text_delta" | "text_done" | "error", ...}
     """
-    # ── authenticate via query param ──
-    token = ws.query_params.get("token")
+    await ws.accept()
+
+    # ── first-message auth ──
+    try:
+        first = json.loads(await asyncio.wait_for(ws.receive_text(), timeout=AUTH_DEADLINE_S))
+    except WebSocketDisconnect:
+        return
+    except (asyncio.TimeoutError, TimeoutError):
+        await ws.close(code=4001, reason="Auth timeout")
+        return
+    except json.JSONDecodeError:
+        await ws.close(code=4001, reason="Expected an auth message")
+        return
+
+    token = first.get("token") if isinstance(first, dict) and first.get("type") == "auth" else None
     if not token:
-        await ws.close(code=4001, reason="Missing token query param")
+        await ws.close(code=4001, reason='Expected {"type": "auth", "token": "<jwt>"}')
         return
 
     try:
@@ -80,7 +98,7 @@ async def chat_ws(ws: WebSocket):
         return
 
     user_id = user["user_id"]
-    await ws.accept()
+    await ws.send_json({"type": "auth_ok"})
 
     # Per-user tool table: portfolio tools read THIS user's snapshot (and
     # degrade to a groww_not_linked result when they have no portfolio).
@@ -107,7 +125,7 @@ async def chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "error", "detail": "Empty message"})
                 continue
 
-            if not allow_chat_turn(user_id):
+            if not await asyncio.to_thread(allow_chat_turn, user_id):
                 await ws.send_json({
                     "type": "error",
                     "detail": "Rate limit exceeded — too many chat turns. Try again later.",

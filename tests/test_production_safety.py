@@ -57,8 +57,9 @@ def test_default_model_is_current(monkeypatch):
 # ── chat-turn rate limit ──────────────────────────────────────────────
 
 
-def test_chat_turn_rate_limit(monkeypatch):
-    # Re-import with a small window so the test is fast and isolated.
+def test_chat_turn_rate_limit(monkeypatch, fake_db):
+    # Re-import with a small window so the test is fast and isolated. The
+    # counter itself lives in (fake) DynamoDB — shared across workers.
     monkeypatch.setenv("PENNYWISE_CHAT_TURNS_PER_WINDOW", "3")
     importlib.reload(ratelimit)
     try:

@@ -10,14 +10,13 @@ from pennywise.api.auth import current_user
 from pennywise.api.background import submit_job
 from pennywise.api.groww_creds import GrowwNotLinked, has_portfolio_source, snapshot_provider
 from pennywise.api.models import JobStatus, RecommendRequest
-from pennywise.api.ratelimit import RECOMMENDATIONS_LIMIT, limiter
+from pennywise.api.ratelimit import allow_recommendation
 from pennywise.graph.workflow import run_pennywise
 
 router = APIRouter(prefix="/api/recommendations", tags=["recommendations"])
 
 
 @router.post("", response_model=JobStatus)
-@limiter.limit(RECOMMENDATIONS_LIMIT)
 async def start_recommendations(
     request: Request,
     body: RecommendRequest,
@@ -28,6 +27,13 @@ async def start_recommendations(
     This takes 30-100 seconds, so it runs as a background job.
     Poll ``GET /api/recommendations/{job_id}`` for status.
     """
+    # Shared per-user cap (each run is a multi-LLM-call workflow).
+    if not await asyncio.to_thread(allow_recommendation, user["user_id"]):
+        raise HTTPException(
+            status_code=429,
+            detail="Recommendation limit reached — try again in an hour.",
+        )
+
     # Fail fast with a 409 instead of a background job that's doomed.
     if not await asyncio.to_thread(has_portfolio_source, user):
         raise GrowwNotLinked()

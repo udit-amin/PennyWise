@@ -4,7 +4,9 @@ Adapts the existing chat tool infrastructure (TOOL_SPECS, TOOL_IMPLS,
 SYSTEM prompt) to work over a WebSocket connection with streaming
 responses.
 
-The protocol:
+The protocol (after the first-frame auth handshake — see routes/chat.py):
+  Client → Server: {"type": "auth", "token": "<jwt>"}   (first frame only)
+  Server → Client: {"type": "auth_ok"}
   Client → Server: {"type": "message", "text": "...", "session_id": "..." | null}
   Server → Client: {"type": "tool_call", "name": "...", "input": {...}}
   Server → Client: {"type": "tool_result", "name": "...", "duration_ms": int}
