@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import boto3
@@ -88,15 +88,70 @@ def get_user(user_id: str) -> dict | None:
         return None
 
 
+def set_user_groww_credentials(user_id: str, enc_blob: str) -> None:
+    """Store the encrypted Groww credential blob, clearing any legacy
+    plaintext credentials and stale cached daily token."""
+    _table("users").update_item(
+        Key={"user_id": user_id},
+        UpdateExpression=(
+            "SET groww_credentials_enc = :c, updated_at = :u "
+            "REMOVE groww_credentials, groww_token_cache_enc, groww_token_expires_at"
+        ),
+        ExpressionAttributeValues={
+            ":c": enc_blob,
+            ":u": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+
+def cache_user_groww_token(user_id: str, enc_token: str, expires_at: str) -> None:
+    """Persist the encrypted daily Groww access token so it survives worker
+    restarts until its 6AM IST expiry."""
+    _table("users").update_item(
+        Key={"user_id": user_id},
+        UpdateExpression="SET groww_token_cache_enc = :t, groww_token_expires_at = :e",
+        ExpressionAttributeValues={":t": enc_token, ":e": expires_at},
+    )
+
+
 # ── Sessions ──────────────────────────────────────────────────────────
+
+
+_HISTORY_MAX_BYTES = 300_000  # headroom under DynamoDB's 400 KB item cap
+
+
+def _truncate_history(history: list, max_bytes: int = _HISTORY_MAX_BYTES) -> list:
+    """Drop the oldest turns until the serialized history fits the budget.
+
+    Cuts only at a plain-text user turn (tool_results arrive as user messages
+    with list content), so tool_use/tool_result pairs are never orphaned."""
+
+    def _size(h: list) -> int:
+        return len(json.dumps(h, default=str).encode())
+
+    while _size(history) > max_bytes:
+        cut = next(
+            (
+                i
+                for i in range(1, len(history))
+                if history[i].get("role") == "user"
+                and isinstance(history[i].get("content"), str)
+            ),
+            None,
+        )
+        if cut is None:
+            break  # no safe boundary left; better oversized than corrupt
+        history = history[cut:]
+    return history
 
 
 def save_session(user_id: str, session_id: str, data: dict) -> None:
     table = _table("sessions")
+    history = _truncate_history(list(data.get("history", [])))
     item = {
         "user_id": user_id,
         "session_id": session_id,
-        "history": json.dumps(data.get("history", []), default=str),
+        "history": json.dumps(history, default=str),
         "model": data.get("model", ""),
         "started_at": data.get("started_at", ""),
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -201,6 +256,63 @@ def update_job(user_id: str, job_id: str, *, status: str, result: dict | None = 
     )
 
 
+def touch_job(user_id: str, job_id: str) -> None:
+    """Record a liveness heartbeat for a running job."""
+    _table("jobs").update_item(
+        Key={"user_id": user_id, "job_id": job_id},
+        UpdateExpression="SET heartbeat_at = :h",
+        ExpressionAttributeValues={":h": datetime.now(timezone.utc).isoformat()},
+    )
+
+
+def list_stale_jobs(stale_after_s: int) -> list[dict]:
+    """Jobs still pending/running whose last heartbeat (or creation) is older
+    than the cutoff — i.e. orphaned by a crashed or replaced task. The jobs
+    table is tiny, so a scan is fine."""
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_s)
+    try:
+        resp = _table("jobs").scan(
+            FilterExpression="#s IN (:r, :p)",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":r": "running", ":p": "pending"},
+        )
+        items = resp.get("Items", [])
+    except ClientError:
+        return []
+    stale = []
+    for item in items:
+        last = item.get("heartbeat_at") or item.get("created_at") or ""
+        try:
+            if datetime.fromisoformat(last) < cutoff:
+                stale.append(item)
+        except ValueError:
+            stale.append(item)  # unparseable timestamp — treat as orphaned
+    return stale
+
+
+def fail_job_if_still_running(user_id: str, job_id: str, error: str) -> bool:
+    """Mark a job failed only if it hasn't finished meanwhile (conditional
+    write), so reconciliation from multiple workers never clobbers a job that
+    completed between scan and update. Returns True if transitioned."""
+    try:
+        _table("jobs").update_item(
+            Key={"user_id": user_id, "job_id": job_id},
+            UpdateExpression="SET #s = :f, #e = :err, updated_at = :u",
+            ConditionExpression="#s IN (:r, :p)",
+            ExpressionAttributeNames={"#s": "status", "#e": "error"},
+            ExpressionAttributeValues={
+                ":f": "failed",
+                ":err": error,
+                ":r": "running",
+                ":p": "pending",
+                ":u": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return True
+    except ClientError:
+        return False
+
+
 def get_job(user_id: str, job_id: str) -> dict | None:
     table = _table("jobs")
     try:
@@ -224,7 +336,13 @@ def cache_get(key: str) -> dict | None:
     try:
         resp = table.get_item(Key={"cache_key": key})
         item = resp.get("Item")
-        if item and isinstance(item.get("data"), str):
+        if not item:
+            return None
+        # DynamoDB TTL deletion can lag up to ~48h; enforce expiry on read.
+        ttl = item.get("ttl")
+        if ttl is not None and int(ttl) < int(datetime.now(timezone.utc).timestamp()):
+            return None
+        if isinstance(item.get("data"), str):
             item["data"] = json.loads(item["data"])
         return item
     except ClientError:
@@ -240,6 +358,23 @@ def cache_put(key: str, data: dict, ttl_seconds: int = 3600) -> None:
         "fetched_at": now.isoformat(),
         "ttl": int(now.timestamp()) + ttl_seconds,
     })
+
+
+def incr_rate_counter(scope: str, user_id: str, window_start: int, ttl_s: int) -> int:
+    """Atomically increment a fixed-window rate counter on the cache table
+    (shared across workers/tasks; rows expire via the table's TTL).
+    Returns the hit count for this window — 1 means first hit."""
+    resp = _table("cache").update_item(
+        Key={"cache_key": f"rl#{scope}#{user_id}#{window_start}"},
+        UpdateExpression="ADD hits :one SET #t = if_not_exists(#t, :exp)",
+        ExpressionAttributeNames={"#t": "ttl"},
+        ExpressionAttributeValues={
+            ":one": 1,
+            ":exp": int(datetime.now(timezone.utc).timestamp()) + ttl_s,
+        },
+        ReturnValues="UPDATED_NEW",
+    )
+    return int(resp["Attributes"]["hits"])
 
 
 # ── Health ────────────────────────────────────────────────────────────
