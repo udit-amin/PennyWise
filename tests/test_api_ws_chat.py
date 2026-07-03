@@ -14,11 +14,17 @@ def _auth_frame(user) -> str:
     return json.dumps({"type": "auth", "token": create_jwt(user["user_id"], user["email"])})
 
 
-def _wait_for_saved_session(fake_db, user_id, timeout_s=2.0):
+def _wait_for_saved_session(fake_db, user_id, timeout_s=8.0):
     """The route saves the session via asyncio.to_thread *after* the mocked
     turn already sent text_done to the client, so the client-side `with`
     block can exit before the write lands server-side. Poll instead of
-    asserting immediately after the socket closes."""
+    asserting immediately after the socket closes.
+
+    8s (not 2s) because the oversized-history test does real CPU work here
+    (serialize + truncate ~1MB of history) inside the background thread —
+    comfortably fast on a quiet machine, but a loaded/shared CI runner needs
+    more headroom. The loop still returns as soon as the write lands, so
+    this only affects worst-case latency, not the common-case runtime."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         saved = [s for (uid, _), s in fake_db.sessions.items() if uid == user_id]
