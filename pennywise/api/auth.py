@@ -10,9 +10,11 @@ Flow:
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
+import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Any
 from urllib.parse import urlencode
 
 import httpx
@@ -24,9 +26,13 @@ from jose import JWTError, jwt
 
 from pennywise.api import db
 
+logger = logging.getLogger("pennywise.api.auth")
+
+_DEV_JWT_SECRET = "pennywise-dev-secret-change-me"
+
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
-JWT_SECRET = os.getenv("JWT_SECRET", "pennywise-dev-secret-change-me")
+JWT_SECRET = os.getenv("JWT_SECRET", _DEV_JWT_SECRET)
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
 
@@ -36,10 +42,74 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 security = HTTPBearer()
 
 
+def validate_auth_config() -> None:
+    """Fail closed on insecure config in deployed environments.
+
+    Called at application startup. In ``staging``/``prod`` a missing or
+    default ``JWT_SECRET`` would let anyone forge tokens, and missing Google
+    OAuth credentials would silently break login — so we refuse to boot.
+    Dev keeps the convenient defaults.
+    """
+    from pennywise import config
+
+    if not config.load().is_prod_like:
+        return
+
+    errors: list[str] = []
+    if not JWT_SECRET or JWT_SECRET == _DEV_JWT_SECRET:
+        errors.append("JWT_SECRET is unset or the dev default — set a strong random secret.")
+    if not GOOGLE_CLIENT_ID:
+        errors.append("GOOGLE_CLIENT_ID is unset.")
+    if not GOOGLE_CLIENT_SECRET:
+        errors.append("GOOGLE_CLIENT_SECRET is unset.")
+    if errors:
+        raise RuntimeError(
+            "Refusing to start in a deployed environment with insecure auth config:\n  - "
+            + "\n  - ".join(errors)
+        )
+
+
 # ── Google OAuth ──────────────────────────────────────────────────────
 
+OAUTH_STATE_TTL_MINUTES = 10
 
-def google_auth_url(redirect_uri: str) -> str:
+
+def create_oauth_state() -> str:
+    """Mint a self-validating CSRF state token (RFC 6749 §10.12).
+
+    Signed with the existing JWT secret, so it verifies statelessly across
+    all workers/tasks — no server-side session store needed."""
+    payload = {
+        "purpose": "oauth_state",
+        "nonce": uuid.uuid4().hex,
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=OAUTH_STATE_TTL_MINUTES),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def verify_oauth_state(state: str | None) -> None:
+    """Raise 400 unless ``state`` is one we minted recently."""
+    detail = "Invalid or expired OAuth state — restart the sign-in flow."
+    if not state:
+        raise HTTPException(status_code=400, detail="Missing OAuth state parameter.")
+    try:
+        payload = jwt.decode(state, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=400, detail=detail)
+    if payload.get("purpose") != "oauth_state":
+        raise HTTPException(status_code=400, detail=detail)
+
+
+def validate_redirect_uri(uri: str) -> None:
+    """Exact-match the redirect_uri against the configured allowlist. A
+    client-chosen redirect_uri would let an attacker receive the token."""
+    from pennywise import config
+
+    if uri not in config.load().allowed_redirect_uris:
+        raise HTTPException(status_code=400, detail="redirect_uri is not allowed.")
+
+
+def google_auth_url(redirect_uri: str, state: str) -> str:
     """Build the Google OAuth authorization URL."""
     params = {
         "client_id": GOOGLE_CLIENT_ID,
@@ -48,6 +118,7 @@ def google_auth_url(redirect_uri: str) -> str:
         "scope": "openid email profile",
         "access_type": "offline",
         "prompt": "consent",
+        "state": state,
     }
     return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
 
@@ -67,7 +138,10 @@ async def exchange_google_code(code: str, redirect_uri: str) -> dict:
             "redirect_uri": redirect_uri,
         })
     if resp.status_code != 200:
-        raise HTTPException(status_code=400, detail=f"Google token exchange failed: {resp.text}")
+        # Google's error body can carry diagnostic detail — log it, never
+        # echo it to the client.
+        logger.warning("Google token exchange failed (%s): %s", resp.status_code, resp.text)
+        raise HTTPException(status_code=400, detail="Google token exchange failed.")
 
     tokens = resp.json()
     raw_id_token = tokens.get("id_token")
@@ -80,10 +154,23 @@ async def exchange_google_code(code: str, redirect_uri: str) -> dict:
             raw_id_token, google_requests.Request(), GOOGLE_CLIENT_ID
         )
     except ValueError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid Google ID token: {e}")
+        logger.warning("Google ID token verification failed: %s", e)
+        raise HTTPException(status_code=401, detail="Invalid Google ID token.")
 
+    return _profile_from_id_token(info)
+
+
+def _profile_from_id_token(info: dict) -> dict:
+    """Extract the user profile, rejecting tokens without a verified email —
+    the email is our user identity key (users table email-index)."""
+    email = info.get("email")
+    if not email or not info.get("email_verified", False):
+        raise HTTPException(
+            status_code=401,
+            detail="Google account did not provide a verified email address.",
+        )
     return {
-        "email": info["email"],
+        "email": email,
         "name": info.get("name"),
         "picture": info.get("picture"),
     }
@@ -107,10 +194,11 @@ def decode_jwt(token: str) -> dict:
     """Decode and verify a PennyWise JWT. Raises on expiry/tampering."""
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-    except JWTError as e:
+    except JWTError:
+        # JWTError strings can echo token fragments — keep the detail generic.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {e}",
+            detail="Invalid or expired token.",
         )
 
 
@@ -120,9 +208,12 @@ def decode_jwt(token: str) -> dict:
 async def current_user(
     creds: HTTPAuthorizationCredentials = Depends(security),
 ) -> dict:
-    """Dependency that extracts + validates the JWT and returns the user dict."""
+    """Dependency that extracts + validates the JWT and returns the user dict.
+
+    The DynamoDB lookup runs in a worker thread — this dependency executes on
+    every authenticated request and must not block the event loop."""
     payload = decode_jwt(creds.credentials)
-    user = db.get_user(payload["sub"])
+    user = await asyncio.to_thread(db.get_user, payload["sub"])
     if not user:
         raise HTTPException(status_code=401, detail="User not found.")
     return user

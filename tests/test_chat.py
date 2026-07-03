@@ -136,8 +136,8 @@ def test_clear_live_caches_wipes_both():
     chat_mod._TECHNICALS_CACHE["X"] = {"x": 1}
     chat_mod._FUNDAMENTALS_CACHE["Y"] = {"y": 2}
     chat_mod._clear_live_caches()
-    assert chat_mod._TECHNICALS_CACHE == {}
-    assert chat_mod._FUNDAMENTALS_CACHE == {}
+    assert len(chat_mod._TECHNICALS_CACHE) == 0
+    assert len(chat_mod._FUNDAMENTALS_CACHE) == 0
 
 
 # ────────────────────────── session persistence ──────────────────────────

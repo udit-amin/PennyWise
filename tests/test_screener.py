@@ -1,4 +1,3 @@
-import httpx
 import pytest
 
 from pennywise.connectors.screener import ScreenerScraper, clear_cache

@@ -1,6 +1,4 @@
-import json
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from pennywise.snapshot import Snapshot, snapshot_path, stamp_now
 

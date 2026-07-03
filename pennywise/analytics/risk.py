@@ -17,7 +17,9 @@ class Holding(TypedDict, total=False):
 
 
 def _value(h: Holding) -> float:
-    return float(h.get("quantity", 0)) * float(h.get("ltp", 0))
+    # ltp can be an explicit None (failed LTP lookup, or an uploaded
+    # statement without a price column) — treat as zero value.
+    return float(h.get("quantity") or 0) * float(h.get("ltp") or 0)
 
 
 def _bucket_mcap(cr: float | None, *, large_floor: float, mid_floor: float) -> str:

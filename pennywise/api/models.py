@@ -1,7 +1,7 @@
 """Pydantic request / response models for the PennyWise API."""
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ── Auth ──────────────────────────────────────────────────────────────
@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 class GoogleCallbackRequest(BaseModel):
     code: str = Field(..., description="Authorization code from Google OAuth redirect.")
     redirect_uri: str = Field(..., description="The redirect URI used in the OAuth flow.")
+    state: str = Field(..., description="CSRF state issued by GET /api/auth/google/url.")
 
 
 class AuthResponse(BaseModel):
@@ -32,6 +33,21 @@ class GrowwCredentialRequest(BaseModel):
     token: str | None = None
     api_key: str | None = None
     api_secret: str | None = None
+
+    @model_validator(mode="after")
+    def _require_usable_combination(self) -> "GrowwCredentialRequest":
+        if self.token or (self.api_key and self.api_secret):
+            return self
+        raise ValueError(
+            "Provide either `token` (a daily access token) or both "
+            "`api_key` and `api_secret`."
+        )
+
+
+class GrowwStatusResponse(BaseModel):
+    linked: bool
+    source: str | None = None  # "groww" | "upload" | None
+    as_of: str | None = None   # snapshot fetched_at, when one exists
 
 
 # ── Portfolio ─────────────────────────────────────────────────────────
@@ -57,6 +73,17 @@ class HoldingsResponse(BaseModel):
 class RiskMetricsResponse(BaseModel):
     risk_metrics: dict
     gaps: dict
+
+
+class UploadResponse(BaseModel):
+    """Result of a holdings-statement upload."""
+    count: int
+    source: str = "upload"
+    as_of: str
+    ignored: list[dict] = Field(
+        default_factory=list,
+        description="Rows that could not be imported, with row number and reason.",
+    )
 
 
 # ── Tools ─────────────────────────────────────────────────────────────

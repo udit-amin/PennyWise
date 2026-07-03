@@ -37,7 +37,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from anthropic import Anthropic
 from rich.console import Console
@@ -49,6 +49,7 @@ from pennywise.agents.risk_analyzer import risk_analyzer_node
 from pennywise.config import load
 from pennywise.snapshot import Snapshot
 from pennywise.tagging import build_snapshot
+from pennywise.utils.ttl_cache import TTLCache
 
 SYSTEM = """You are PennyWise, an honest, plain-English portfolio advisor
 for a retail Indian investor on Groww (NSE/BSE).
@@ -203,7 +204,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
 
 
 def _snapshot() -> Snapshot:
-    """Reuse a cached snapshot if fresh; else build one."""
+    """Reuse a cached snapshot if fresh; else build one.
+
+    CLI-only default: reads ~/.pennywise + local Groww credentials. The API
+    passes a per-user ``get_snapshot`` into :func:`make_tool_impls` instead.
+    """
     snap = Snapshot.load_if_fresh(max_age_s=2 * 60 * 60)
     if snap is None:
         snap = build_snapshot()
@@ -211,9 +216,9 @@ def _snapshot() -> Snapshot:
     return snap
 
 
-def _risk_state() -> dict:
+def _risk_state(get_snapshot: Callable[[], Snapshot] | None = None) -> dict:
     """Holdings + risk metrics computed from the current snapshot."""
-    snap = _snapshot()
+    snap = (get_snapshot or _snapshot)()
     state = {
         "holdings": list(snap.holdings),
         "fundamentals": {
@@ -229,8 +234,8 @@ def _risk_state() -> dict:
     return risk_analyzer_node(state) | {"holdings_raw": state["holdings"]}
 
 
-def tool_get_holdings() -> dict:
-    enriched = _risk_state()
+def tool_get_holdings(get_snapshot: Callable[[], Snapshot] | None = None) -> dict:
+    enriched = _risk_state(get_snapshot)
     rows = []
     for h in enriched["holdings"]:
         qty = float(h.get("quantity") or 0)
@@ -253,17 +258,17 @@ def tool_get_holdings() -> dict:
     return {"count": len(rows), "holdings": rows}
 
 
-def tool_get_risk_metrics() -> dict:
-    enriched = _risk_state()
+def tool_get_risk_metrics(get_snapshot: Callable[[], Snapshot] | None = None) -> dict:
+    enriched = _risk_state(get_snapshot)
     return {
         "risk_metrics": enriched.get("risk_metrics"),
         "gaps": enriched.get("gaps"),
     }
 
 
-def tool_analyze_ticker(symbol: str) -> dict:
+def tool_analyze_ticker(symbol: str, get_snapshot: Callable[[], Snapshot] | None = None) -> dict:
     sym = symbol.strip().upper()
-    enriched = _risk_state()
+    enriched = _risk_state(get_snapshot)
     match = next(
         (h for h in enriched["holdings"] if (h.get("symbol") or "").upper() == sym),
         None,
@@ -288,20 +293,32 @@ def tool_analyze_ticker(symbol: str) -> dict:
     }
 
 
-def tool_list_recommendations(focus: str = "all") -> dict:
+def tool_list_recommendations(
+    focus: str = "all",
+    get_snapshot: Callable[[], Snapshot] | None = None,
+) -> dict:
     # Imported lazily because run_pennywise pulls in yfinance + langgraph,
     # which is slow to import for chat sessions that never ask for recs.
     from pennywise.graph.workflow import run_pennywise
+
+    if get_snapshot is not None:
+        snap = get_snapshot()
+        return run_pennywise(
+            focus=focus,
+            initial_holdings=snap.holdings,
+            initial_positions=snap.positions,
+        )
     return run_pennywise(focus=focus)
 
 
 # ────────────────── live-data tools (cached per session) ──────────────────
 
 
-# Per-process caches so Claude doesn't pay the round-trip twice in one
-# conversation if it re-asks for the same ticker. Cleared by /new.
-_TECHNICALS_CACHE: dict[str, dict] = {}
-_FUNDAMENTALS_CACHE: dict[str, dict] = {}
+# Per-process market-data caches (ticker-keyed, shared across users by
+# design). Bounded + TTL'd so a long-running server neither grows without
+# limit nor serves stale prices forever. Cleared by /new.
+_TECHNICALS_CACHE = TTLCache(maxsize=512, ttl_s=15 * 60)
+_FUNDAMENTALS_CACHE = TTLCache(maxsize=512, ttl_s=30 * 60)
 
 
 def _norm_symbol(symbol: str) -> str:
@@ -371,15 +388,55 @@ def _clear_live_caches() -> None:
     _FUNDAMENTALS_CACHE.clear()
 
 
-TOOL_IMPLS = {
-    "get_holdings": lambda _kwargs: tool_get_holdings(),
-    "get_risk_metrics": lambda _kwargs: tool_get_risk_metrics(),
-    "analyze_ticker": lambda kw: tool_analyze_ticker(**kw),
-    "fetch_technicals": lambda kw: tool_fetch_technicals(**kw),
-    "fetch_fundamentals": lambda kw: tool_fetch_fundamentals(**kw),
-    "fetch_news": lambda kw: tool_fetch_news(**kw),
-    "list_recommendations": lambda kw: tool_list_recommendations(**kw),
+_NOT_LINKED_RESULT = {
+    "error": "groww_not_linked",
+    "message": (
+        "No portfolio available: the user hasn't connected a Groww account "
+        "or uploaded a holdings statement. Portfolio tools are unavailable — "
+        "explain this and offer market-data lookups instead."
+    ),
 }
+
+
+def make_tool_impls(
+    get_snapshot: Callable[[], Snapshot] | None = None,
+) -> dict[str, Callable[[dict], dict]]:
+    """Build the tool dispatch table.
+
+    ``get_snapshot`` injects a per-user portfolio source (API path). Without
+    it (CLI path) the local-snapshot default applies. Portfolio-dependent
+    tools degrade to a structured ``groww_not_linked`` result when the source
+    raises GrowwNotLinked, so chat keeps working without a portfolio.
+    """
+
+    def _portfolio_guard(fn: Callable[[dict], dict]) -> Callable[[dict], dict]:
+        def guarded(kw: dict) -> dict:
+            from pennywise.api.groww_creds import GrowwNotLinked
+
+            try:
+                return fn(kw)
+            except GrowwNotLinked:
+                return dict(_NOT_LINKED_RESULT)
+
+        return guarded
+
+    return {
+        "get_holdings": _portfolio_guard(lambda _kw: tool_get_holdings(get_snapshot)),
+        "get_risk_metrics": _portfolio_guard(lambda _kw: tool_get_risk_metrics(get_snapshot)),
+        "analyze_ticker": _portfolio_guard(
+            lambda kw: tool_analyze_ticker(**kw, get_snapshot=get_snapshot)
+        ),
+        "fetch_technicals": lambda kw: tool_fetch_technicals(**kw),
+        "fetch_fundamentals": lambda kw: tool_fetch_fundamentals(**kw),
+        "fetch_news": lambda kw: tool_fetch_news(**kw),
+        "list_recommendations": _portfolio_guard(
+            lambda kw: tool_list_recommendations(**kw, get_snapshot=get_snapshot)
+        ),
+    }
+
+
+# CLI default table — reads the local snapshot / credentials as before.
+TOOL_IMPLS = make_tool_impls()
 
 
 # ────────────────────────────── chat loop ──────────────────────────────

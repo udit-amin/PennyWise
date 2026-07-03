@@ -15,11 +15,29 @@ final ``tool_use`` block.
 """
 from __future__ import annotations
 
+import os
+from functools import lru_cache
 from typing import Any
 
+import httpx
 from anthropic import Anthropic
 
 from pennywise.config import load
+
+
+@lru_cache(maxsize=4)
+def _client(api_key: str) -> Anthropic:
+    """Shared Anthropic client (thread-safe): reuses HTTP connections across
+    the parallel graph nodes / job threads instead of one client per call,
+    and gives every call retries + a hard timeout so a transient Anthropic
+    blip doesn't fail a 30-100s workflow or hang it forever."""
+    return Anthropic(
+        api_key=api_key,
+        max_retries=int(os.getenv("PENNYWISE_LLM_MAX_RETRIES", "3")),
+        timeout=httpx.Timeout(
+            float(os.getenv("PENNYWISE_LLM_TIMEOUT_S", "120")), connect=5.0
+        ),
+    )
 
 
 def structured_call(
@@ -49,7 +67,7 @@ def structured_call(
     settings = load()
     if not settings.anthropic_api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set")
-    client = Anthropic(api_key=settings.anthropic_api_key)
+    client = _client(settings.anthropic_api_key)
 
     kwargs: dict[str, Any] = {
         "model": settings.llm_model,

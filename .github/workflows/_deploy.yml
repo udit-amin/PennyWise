@@ -1,0 +1,129 @@
+name: _deploy
+
+# Reusable deploy: render a new task-definition revision pointing at an image
+# tag, roll the ECS service, then smoke-test. Build-once-promote: staging
+# builds + pushes the image; prod calls this with build=false and the same SHA.
+#
+# Safety net: the task-definition revision running before this deploy is
+# captured up front. If the post-deploy smoke test fails, that revision is
+# redeployed automatically and the workflow still fails loudly (so a bad
+# release never sits "successfully deployed" while broken). ECS's own
+# deployment circuit breaker (infra/ecs.tf) is the first line of defense —
+# it reverts automatically when new tasks fail ALB health checks before we
+# even get to the smoke test.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      image_tag:
+        required: true
+        type: string
+      build:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write   # GitHub OIDC → AWS
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+      ECS_TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY }}
+      CONTAINER_NAME: api
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        if: ${{ inputs.build }}
+        run: |
+          docker build -t "$ECR_REPOSITORY:${{ inputs.image_tag }}" .
+          docker push "$ECR_REPOSITORY:${{ inputs.image_tag }}"
+
+      - name: Verify image exists in ECR
+        run: |
+          aws ecr describe-images \
+            --repository-name "$(basename "$ECR_REPOSITORY")" \
+            --image-ids imageTag="${{ inputs.image_tag }}" >/dev/null
+
+      - name: Verify required secrets are populated
+        run: |
+          for name in \
+            "${ECS_TASK_FAMILY}-jwt-secret" \
+            "${ECS_TASK_FAMILY}-anthropic-api-key" \
+            "${ECS_TASK_FAMILY}-google-client-id" \
+            "${ECS_TASK_FAMILY}-google-client-secret" \
+            "${ECS_TASK_FAMILY}-credentials-key"; do
+            value=$(aws secretsmanager get-secret-value --secret-id "$name" \
+              --query SecretString --output text 2>/dev/null || true)
+            if [ -z "$value" ] || [ "$value" = "None" ]; then
+              echo "::error::Secret '$name' is missing or empty — the task would crash-loop at startup. Populate it before deploying." >&2
+              exit 1
+            fi
+          done
+          echo "All required secrets are populated."
+
+      - name: Capture currently-running task definition (rollback target)
+        id: previous
+        run: |
+          arn=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].taskDefinition' --output text)
+          echo "task_definition_arn=$arn" >> "$GITHUB_OUTPUT"
+          echo "Previous task definition: $arn"
+
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "$ECS_TASK_FAMILY" \
+            --query 'taskDefinition' --output json > task-def.json
+
+      - name: Render new image into task definition
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ env.ECR_REPOSITORY }}:${{ inputs.image_tag }}
+
+      - name: Deploy to ECS (rolling, wait for stable)
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      - name: Smoke test
+        id: smoke
+        run: scripts/smoke.sh "${{ vars.API_URL }}"
+
+      - name: Roll back to previous task definition
+        if: failure() && steps.smoke.outcome == 'failure'
+        run: |
+          echo "::warning::Smoke test failed — rolling back to ${{ steps.previous.outputs.task_definition_arn }}"
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
+            --task-definition "${{ steps.previous.outputs.task_definition_arn }}" \
+            >/dev/null
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+          echo "::error::Deploy of ${{ inputs.image_tag }} failed smoke test and was rolled back to the previous task definition. This workflow run is still a failure — investigate before retrying."
+          exit 1

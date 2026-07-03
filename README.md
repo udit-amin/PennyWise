@@ -23,8 +23,12 @@ name (both currently <3%) would bring HHI under 0.15.
 
 **API / web (multi-user):** uses **Google OAuth** as the identity layer.
 Sign in with Google → receive a PennyWise JWT → use it for all API
-calls. Groww credentials are linked to your Google identity and stored
-in DynamoDB.
+calls. Each user then connects a portfolio one of two ways: link Groww
+API credentials (verified against Groww, encrypted at rest in DynamoDB —
+never a shared/default portfolio), or upload a holdings statement
+(CSV/XLSX) with no API subscription needed. Without either, chat still
+works for general market questions; portfolio-specific tools explain
+what's missing instead of erroring.
 
 ## Why this exists
 
@@ -194,25 +198,33 @@ pennywise chat --no-reasoning  # skip extended thinking
 
 ## API endpoints
 
-All endpoints require `Authorization: Bearer <pennywise-jwt>` (except `/health` and `/login`).
+All endpoints require `Authorization: Bearer <pennywise-jwt>` (except `/health`, `/health/ready`, and `/login`).
+Portfolio-dependent endpoints return `409` until the user links Groww or uploads a statement.
 
 | Method | Path | Description |
 |---|---|---|
 | GET | `/login` | Sign-in page with Google button |
-| GET | `/health` | Health check |
-| GET | `/api/auth/google/start` | Redirect to Google OAuth |
+| GET | `/health` | Liveness check |
+| GET | `/health/ready` | Readiness check (DynamoDB reachable) |
+| GET | `/api/auth/google/start` | Redirect to Google OAuth (sets CSRF state cookie) |
 | GET | `/api/auth/google/callback` | Browser OAuth callback → HTML page with JWT |
-| POST | `/api/auth/google/callback` | JSON OAuth callback (for JS frontends) |
+| POST | `/api/auth/google/callback` | JSON OAuth callback (for JS frontends; requires `state`) |
+| GET | `/api/auth/google/url` | Get the OAuth URL + CSRF state (for JS-driven flows) |
 | GET | `/api/auth/me` | Current user info |
-| POST | `/api/auth/groww-credentials` | Link Groww API credentials to account |
+| POST | `/api/auth/groww-credentials` | Link + verify Groww API credentials (encrypted at rest) |
+| GET | `/api/auth/groww-credentials/status` | Whether a portfolio source is linked, and which kind |
 | GET | `/api/portfolio/holdings` | Holdings with sector + P&L |
 | GET | `/api/portfolio/risk` | Concentration / risk metrics |
+| POST | `/api/portfolio/upload` | Import a holdings statement (CSV/XLSX) — no Groww API needed |
 | GET | `/api/tools/technicals/{symbol}` | Live technical indicators |
 | GET | `/api/tools/fundamentals/{symbol}` | Live fundamentals from Screener |
 | GET | `/api/tools/news/{symbol}` | Recent Moneycontrol headlines |
 | POST | `/api/recommendations` | Start recommendation workflow (async job) |
 | GET | `/api/recommendations/{job_id}` | Poll job status |
-| WebSocket | `/api/chat/ws?token=<jwt>` | Streaming chat with tool calls |
+| WebSocket | `/api/chat/ws` | Streaming chat; first frame must be `{"type":"auth","token":"<jwt>"}` |
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the system design and
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md) for the deploy/rollback runbook.
 
 ## MCP integration (optional)
 

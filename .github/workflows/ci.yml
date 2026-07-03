@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Run tests
+        run: uv run pytest -q
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Ruff
+        run: uvx ruff check .
+
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+
+  terraform:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'pull_request' }}
+    strategy:
+      matrix:
+        module: [infra, infra/shared]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Changed files
+        id: changed
+        uses: tj-actions/changed-files@v45
+        with:
+          files: |
+            infra/**
+      - uses: hashicorp/setup-terraform@v3
+        if: steps.changed.outputs.any_changed == 'true'
+        with:
+          terraform_wrapper: false
+      - name: terraform fmt -check
+        if: steps.changed.outputs.any_changed == 'true'
+        working-directory: ${{ matrix.module }}
+        # Not -recursive: infra/shared is a separate root module, checked in
+        # its own matrix entry — recursing from infra/ would double-check it.
+        run: terraform fmt -check
+      - name: terraform init (no backend — validate only)
+        if: steps.changed.outputs.any_changed == 'true'
+        working-directory: ${{ matrix.module }}
+        run: terraform init -backend=false
+      - name: terraform validate
+        if: steps.changed.outputs.any_changed == 'true'
+        working-directory: ${{ matrix.module }}
+        run: terraform validate
+
+  actionlint:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Changed files
+        id: changed
+        uses: tj-actions/changed-files@v45
+        with:
+          files: |
+            .github/workflows/**
+      - name: actionlint
+        if: steps.changed.outputs.any_changed == 'true'
+        uses: reviewdog/action-actionlint@v1
+        with:
+          fail_level: error

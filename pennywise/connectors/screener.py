@@ -7,6 +7,8 @@ from dataclasses import dataclass
 import httpx
 from bs4 import BeautifulSoup
 
+from pennywise.utils.ttl_cache import TTLCache
+
 
 @dataclass
 class Fundamentals:
@@ -24,7 +26,8 @@ class Fundamentals:
 # Process-level cache. Screener fundamentals barely change intraday and the
 # main LangGraph workflow calls fundamentals_node twice (once before, once
 # after candidate-picking) — without this we'd double every external request.
-_CACHE: dict[str, Fundamentals] = {}
+# Bounded + 1h TTL so a long-running server doesn't serve stale ratios forever.
+_CACHE = TTLCache(maxsize=1024, ttl_s=3600)
 
 
 class ScreenerScraper:

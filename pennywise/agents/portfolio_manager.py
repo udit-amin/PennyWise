@@ -12,6 +12,11 @@ SNAPSHOT_MAX_AGE_S = 2 * 60 * 60  # 2 hours
 
 
 def portfolio_manager_node(state: PortfolioState) -> PortfolioState:
+    # Holdings pre-seeded by the caller (API path: per-user portfolio
+    # resolved upstream) — nothing to fetch, and no local-credential access.
+    if state.get("holdings"):
+        return {}
+
     snap = Snapshot.load_if_fresh(max_age_s=SNAPSHOT_MAX_AGE_S)
     if snap is None:
         snap = build_snapshot()

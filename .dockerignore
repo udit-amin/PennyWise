@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+
+# Virtualenvs (rebuilt inside the image)
+.venv/
+venv/
+
+# Secrets / local data — never bake into the image
+.env
+.env.*
+!.env.example
+
+# Tests & dev-only files
+tests/
+.github/
+infra/
+
+# Editors / OS / VCS
+.git/
+.gitignore
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Docs
+*.md
+docs/
