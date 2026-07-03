@@ -3,6 +3,14 @@ name: _deploy
 # Reusable deploy: render a new task-definition revision pointing at an image
 # tag, roll the ECS service, then smoke-test. Build-once-promote: staging
 # builds + pushes the image; prod calls this with build=false and the same SHA.
+#
+# Safety net: the task-definition revision running before this deploy is
+# captured up front. If the post-deploy smoke test fails, that revision is
+# redeployed automatically and the workflow still fails loudly (so a bad
+# release never sits "successfully deployed" while broken). ECS's own
+# deployment circuit breaker (infra/ecs.tf) is the first line of defense —
+# it reverts automatically when new tasks fail ALB health checks before we
+# even get to the smoke test.
 
 on:
   workflow_call:
@@ -57,6 +65,31 @@ jobs:
             --repository-name "$(basename "$ECR_REPOSITORY")" \
             --image-ids imageTag="${{ inputs.image_tag }}" >/dev/null
 
+      - name: Verify required secrets are populated
+        run: |
+          for name in \
+            "${ECS_TASK_FAMILY}-jwt-secret" \
+            "${ECS_TASK_FAMILY}-anthropic-api-key" \
+            "${ECS_TASK_FAMILY}-google-client-id" \
+            "${ECS_TASK_FAMILY}-google-client-secret" \
+            "${ECS_TASK_FAMILY}-credentials-key"; do
+            value=$(aws secretsmanager get-secret-value --secret-id "$name" \
+              --query SecretString --output text 2>/dev/null || true)
+            if [ -z "$value" ] || [ "$value" = "None" ]; then
+              echo "::error::Secret '$name' is missing or empty — the task would crash-loop at startup. Populate it before deploying." >&2
+              exit 1
+            fi
+          done
+          echo "All required secrets are populated."
+
+      - name: Capture currently-running task definition (rollback target)
+        id: previous
+        run: |
+          arn=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].taskDefinition' --output text)
+          echo "task_definition_arn=$arn" >> "$GITHUB_OUTPUT"
+          echo "Previous task definition: $arn"
+
       - name: Download current task definition
         run: |
           aws ecs describe-task-definition \
@@ -80,12 +113,17 @@ jobs:
           wait-for-service-stability: true
 
       - name: Smoke test
+        id: smoke
+        run: scripts/smoke.sh "${{ vars.API_URL }}"
+
+      - name: Roll back to previous task definition
+        if: failure() && steps.smoke.outcome == 'failure'
         run: |
-          URL="${{ vars.API_URL }}"
-          echo "Probing $URL/health/ready"
-          for i in $(seq 1 12); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/health/ready" || true)
-            if [ "$code" = "200" ]; then echo "ready"; exit 0; fi
-            echo "attempt $i: got $code, retrying"; sleep 10
-          done
-          echo "Service did not become ready"; exit 1
+          echo "::warning::Smoke test failed — rolling back to ${{ steps.previous.outputs.task_definition_arn }}"
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
+            --task-definition "${{ steps.previous.outputs.task_definition_arn }}" \
+            >/dev/null
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+          echo "::error::Deploy of ${{ inputs.image_tag }} failed smoke test and was rolled back to the previous task definition. This workflow run is still a failure — investigate before retrying."
+          exit 1

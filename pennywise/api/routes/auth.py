@@ -18,10 +18,6 @@ from pennywise.api.auth import (
     validate_redirect_uri,
     verify_oauth_state,
 )
-from pennywise.api.ratelimit import limiter
-
-_AUTH_RATE_LIMIT = "10/minute"
-_STATE_COOKIE = "pw_oauth_state"
 from pennywise.api.models import (
     AuthResponse,
     GoogleCallbackRequest,
@@ -29,9 +25,12 @@ from pennywise.api.models import (
     GrowwStatusResponse,
     UserResponse,
 )
+from pennywise.api.ratelimit import limiter
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+_AUTH_RATE_LIMIT = "10/minute"
+_STATE_COOKIE = "pw_oauth_state"
 _GOOGLE_REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI",
     "http://localhost:8000/api/auth/google/callback",

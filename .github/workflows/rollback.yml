@@ -1,0 +1,103 @@
+name: Rollback
+
+# Manual rollback for staging or prod. Two modes:
+#   - image_tag given: re-render the task definition with that (already-built,
+#     already-in-ECR) image and deploy it.
+#   - image_tag omitted: redeploy the task definition revision immediately
+#     before the current one (ECS keeps prior revisions; this does not build
+#     or need an image tag at all).
+#
+# Prod rollback goes through the same `production` GitHub Environment
+# approval gate as a normal prod deploy — this is still a production change.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to roll back."
+        required: true
+        type: choice
+        options: [staging, production]
+      image_tag:
+        description: "Image tag (git SHA) to roll back to. Leave blank to redeploy the previous task-definition revision instead."
+        required: false
+        type: string
+
+permissions:
+  id-token: write   # GitHub OIDC → AWS
+  contents: read
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+      ECS_TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY }}
+      CONTAINER_NAME: api
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # ── Mode 1: roll back to a specific, already-built image tag ──────
+      - name: Verify requested image exists in ECR
+        if: ${{ inputs.image_tag != '' }}
+        run: |
+          aws ecr describe-images \
+            --repository-name "$(basename "$ECR_REPOSITORY")" \
+            --image-ids imageTag="${{ inputs.image_tag }}" >/dev/null
+
+      - name: Download current task definition
+        if: ${{ inputs.image_tag != '' }}
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "$ECS_TASK_FAMILY" \
+            --query 'taskDefinition' --output json > task-def.json
+
+      - name: Render requested image into task definition
+        if: ${{ inputs.image_tag != '' }}
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ env.ECR_REPOSITORY }}:${{ inputs.image_tag }}
+
+      - name: Deploy requested image tag
+        if: ${{ inputs.image_tag != '' }}
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      # ── Mode 2: no tag given — redeploy the prior task-def revision ───
+      - name: Resolve and deploy the previous task-definition revision
+        if: ${{ inputs.image_tag == '' }}
+        run: |
+          current=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].taskDefinition' --output text)
+          revision=$(echo "$current" | grep -oE '[0-9]+$')
+          family=$(echo "$current" | sed -E 's#.*task-definition/([^:]+):[0-9]+#\1#')
+          if [ "$revision" -le 1 ]; then
+            echo "::error::Current revision is $revision — no earlier revision to roll back to." >&2
+            exit 1
+          fi
+          target="${family}:$((revision - 1))"
+          echo "Current: $current"
+          echo "Rolling back to: $target"
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
+            --task-definition "$target" >/dev/null
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+
+      - name: Smoke test
+        run: scripts/smoke.sh "${{ vars.API_URL }}"

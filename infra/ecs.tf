@@ -146,6 +146,16 @@ resource "aws_ecs_service" "app" {
     container_port   = 8000
   }
 
+  # First line of defense against a bad deploy: if new tasks fail ALB health
+  # checks, ECS automatically stops the rollout and redeploys the last
+  # healthy task set — no pipeline involvement needed. The GitHub Actions
+  # smoke test (scripts/smoke.sh) is the second line, catching functional
+  # regressions that pass health checks but fail real requests.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   # Let CI update the image without Terraform fighting it.
   lifecycle {
     ignore_changes = [task_definition, desired_count]

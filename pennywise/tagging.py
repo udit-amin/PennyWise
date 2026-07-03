@@ -13,7 +13,6 @@ of the codebase consumes:
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Iterable
 
 from pennywise.analytics.sectors import canonicalize_sector
 from pennywise.connectors.groww import GrowwConnector

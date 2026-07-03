@@ -15,7 +15,6 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Any
 from urllib.parse import urlencode
 
 import httpx

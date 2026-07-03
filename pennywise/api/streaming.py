@@ -103,7 +103,6 @@ async def _run_turn(
         }
 
         # Use streaming API for text deltas
-        collected_content: list[dict] = []
         text_buffer = ""
 
         async with client.messages.stream(**kwargs) as stream:

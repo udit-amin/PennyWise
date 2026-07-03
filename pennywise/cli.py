@@ -192,19 +192,25 @@ def _render_risk(risk_m: dict, commentary: dict) -> None:
     stock_val = risk_m.get("stock_value", 0.0)
 
     aa = Table(title="Asset allocation")
-    aa.add_column("class"); aa.add_column("weight", justify="right"); aa.add_column("value", justify="right")
+    aa.add_column("class")
+    aa.add_column("weight", justify="right")
+    aa.add_column("value", justify="right")
     for cls, w in sorted(risk_m.get("asset_allocation", {}).items(), key=lambda kv: -kv[1]):
         aa.add_row(cls, f"{w * 100:5.1f}%", f"₹{w * total:,.0f}")
     console.print(aa)
 
     table = Table(title="Sector exposure (stocks only)")
-    table.add_column("sector"); table.add_column("weight", justify="right"); table.add_column("value", justify="right")
+    table.add_column("sector")
+    table.add_column("weight", justify="right")
+    table.add_column("value", justify="right")
     for sector, w in sorted(risk_m.get("sector_weights", {}).items(), key=lambda kv: -kv[1]):
         table.add_row(sector, f"{w * 100:5.1f}%", f"₹{w * stock_val:,.0f}")
     console.print(table)
 
     mcap = Table(title="Market-cap mix (stocks only)")
-    mcap.add_column("bucket"); mcap.add_column("weight", justify="right"); mcap.add_column("value", justify="right")
+    mcap.add_column("bucket")
+    mcap.add_column("weight", justify="right")
+    mcap.add_column("value", justify="right")
     for b, w in sorted(risk_m.get("market_cap_weights", {}).items(), key=lambda kv: -kv[1]):
         mcap.add_row(b, f"{w * 100:5.1f}%", f"₹{w * stock_val:,.0f}")
     console.print(mcap)
@@ -247,7 +253,8 @@ def _render_recommendations(result: dict) -> None:
             "SELL":    "bold red",
         }
         table = Table(title="Recommendations")
-        table.add_column("ticker"); table.add_column("action")
+        table.add_column("ticker")
+        table.add_column("action")
         table.add_column("conf", justify="right")
         table.add_column("target %", justify="right")
         table.add_column("rationale")
