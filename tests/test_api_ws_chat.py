@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 from starlette.websockets import WebSocketDisconnect
@@ -11,6 +12,20 @@ from pennywise.api.auth import create_jwt
 
 def _auth_frame(user) -> str:
     return json.dumps({"type": "auth", "token": create_jwt(user["user_id"], user["email"])})
+
+
+def _wait_for_saved_session(fake_db, user_id, timeout_s=2.0):
+    """The route saves the session via asyncio.to_thread *after* the mocked
+    turn already sent text_done to the client, so the client-side `with`
+    block can exit before the write lands server-side. Poll instead of
+    asserting immediately after the socket closes."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        saved = [s for (uid, _), s in fake_db.sessions.items() if uid == user_id]
+        if saved:
+            return saved
+        time.sleep(0.01)
+    pytest.fail("session was never persisted")
 
 
 def test_ws_auth_happy_path(app_client, fake_db, test_user):
@@ -82,7 +97,7 @@ def test_ws_turn_persists_session(app_client, fake_db, test_user, monkeypatch):
         done = ws.receive_json()
         assert done["type"] == "text_done"
 
-    saved = [s for (uid, _), s in fake_db.sessions.items() if uid == test_user["user_id"]]
+    saved = _wait_for_saved_session(fake_db, test_user["user_id"])
     assert len(saved) == 1
     assert saved[0]["last_user_message"] == "hello there"
     assert saved[0]["history"][0]["content"] == "hello there"
@@ -106,7 +121,7 @@ def test_ws_oversized_history_truncated_on_save(app_client, fake_db, test_user, 
         ws.send_text(json.dumps({"type": "message", "text": "go"}))
         ws.receive_json()
 
-    (saved,) = [s for (uid, _), s in fake_db.sessions.items() if uid == test_user["user_id"]]
+    (saved,) = _wait_for_saved_session(fake_db, test_user["user_id"])
     stored_bytes = len(json.dumps(saved["history"]).encode())
     assert stored_bytes <= 300_000
     # Truncation cut at a user-text boundary: history still starts with a user turn.

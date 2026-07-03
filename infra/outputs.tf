@@ -31,5 +31,6 @@ output "secret_names" {
     anthropic_api_key    = aws_secretsmanager_secret.anthropic_api_key.name
     google_client_id     = aws_secretsmanager_secret.google_client_id.name
     google_client_secret = aws_secretsmanager_secret.google_client_secret.name
+    credentials_key      = aws_secretsmanager_secret.credentials_key.name
   }
 }
