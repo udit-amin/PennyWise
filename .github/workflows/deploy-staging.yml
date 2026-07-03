@@ -7,6 +7,13 @@ on:
   push:
     branches: [main]
 
+# A reusable workflow (_deploy.yml) only receives permissions the CALLER also
+# grants — GitHub caps it to the repo default (id-token: none) otherwise,
+# regardless of what _deploy.yml's own `permissions:` block requests.
+permissions:
+  id-token: write
+  contents: read
+
 concurrency:
   group: deploy-staging
   cancel-in-progress: false

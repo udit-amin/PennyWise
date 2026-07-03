@@ -120,8 +120,11 @@ docker-compose up          # API on :8000, DynamoDB-local on :8042
 # → http://localhost:8000/login
 # → Sign in with Google → PennyWise JWT shown on screen
 
-# Link your Groww account (Authorization: Bearer <jwt>):
-# POST /api/auth/groww-credentials  {"api_key": "…", "api_secret": "…"}
+# Connect a portfolio, either:
+# (a) link Groww API credentials (Authorization: Bearer <jwt>):
+#     POST /api/auth/groww-credentials  {"api_key": "…", "api_secret": "…"}
+# (b) upload a holdings statement — no Groww API subscription needed:
+#     POST /api/portfolio/upload  (multipart CSV/XLSX)
 ```
 
 API docs auto-generate at `http://localhost:8000/docs`.
@@ -223,8 +226,10 @@ Portfolio-dependent endpoints return `409` until the user links Groww or uploads
 | GET | `/api/recommendations/{job_id}` | Poll job status |
 | WebSocket | `/api/chat/ws` | Streaming chat; first frame must be `{"type":"auth","token":"<jwt>"}` |
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the system design and
-[`docs/OPERATIONS.md`](docs/OPERATIONS.md) for the deploy/rollback runbook.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the system design,
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md) for the deploy/rollback runbook,
+and [`docs/AWS_SETUP.md`](docs/AWS_SETUP.md) for provisioning a fresh AWS
+account.
 
 ## MCP integration (optional)
 
@@ -257,7 +262,7 @@ All knobs live in `.env` (copy from `.env.example`):
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | Required for `risk`, `recommend`, `chat`. |
 | `GROWW_API_TOKEN` | — | Pre-minted daily Groww token (alternative to running `pennywise login groww`). |
-| `PENNYWISE_LLM_MODEL` | `claude-opus-4-7` | Claude model id. Sonnet-class models also work and cost ~3× less. |
+| `PENNYWISE_LLM_MODEL` | `claude-opus-4-8` | Claude model id. Sonnet-class models also work and cost ~3× less. |
 | `PENNYWISE_REASONING_EFFORT` | `medium` | Adaptive-thinking effort for Synthesizer / Critic (`low` / `medium` / `high`). |
 | `PENNYWISE_HHI_FLAG` | `0.25` | HHI threshold for the "concentrated" flag. |
 | `PENNYWISE_TOP_NAME_FLAG` | `0.20` | Single-name weight that triggers a TRIM suggestion. |
@@ -266,9 +271,14 @@ All knobs live in `.env` (copy from `.env.example`):
 | `GOOGLE_CLIENT_ID` | — | Google OAuth client ID. |
 | `GOOGLE_CLIENT_SECRET` | — | Google OAuth client secret. |
 | `GOOGLE_REDIRECT_URI` | `http://localhost:8000/api/auth/google/callback` | Redirect URI registered in Google Cloud Console (API backend). For CLI, register `http://localhost:18765/callback` separately. |
-| `JWT_SECRET` | `pennywise-dev-secret-change-me` | JWT signing secret for the API backend. Change this in production. |
+| `JWT_SECRET` | `pennywise-dev-secret-change-me` | JWT signing secret for the API backend. The dev default is fine locally; the API **refuses to start** in staging/prod with it unchanged. |
 | `DYNAMODB_ENDPOINT` | — | DynamoDB-local URL (`http://localhost:8042`); leave unset for real AWS. |
 | `CORS_ORIGINS` | `localhost:3000,5173` | Comma-separated allowed origins for the API. |
+
+That covers local dev. Deploying to staging/prod introduces more knobs
+(rate limits, job timeouts, LLM retry/timeout tuning, structured logging) —
+see [`.env.production.example`](.env.production.example) for the full list
+and [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for how they're populated.
 
 Refresh the market-cap floors biannually from
 [amfiindia.com → Categorization of Stocks][amfi].
@@ -281,8 +291,9 @@ Refresh the market-cap floors biannually from
 uv run pytest -q
 ```
 
-73 tests, all offline — mocked HTTP responses and inline HTML fixtures,
-no live calls.
+167 tests, all offline and credential-free — connectors are tested against
+mocked HTTP transports, the API layer against an in-memory DynamoDB stand-in
+(`tests/conftest.py`), no live calls or AWS access needed.
 
 ## Project layout
 
@@ -292,7 +303,7 @@ pennywise/
 ├── chat.py                # interactive REPL + tool definitions
 ├── config.py              # .env loading
 ├── credentials.py         # ~/.pennywise/credentials.json store + TOTP generation
-├── login.py               # pennywise login groww / google flows
+├── login.py               # pennywise login groww
 ├── snapshot.py            # on-disk portfolio cache
 ├── tagging.py             # build_snapshot() — holdings + LTP + Screener tags
 ├── connectors/            # groww / screener / yfinance / moneycontrol
@@ -303,14 +314,20 @@ pennywise/
 │   ├── strategy_critic.py
 │   └── …
 ├── graph/                 # LangGraph state + workflow wiring
-├── api/                   # FastAPI backend
+├── api/                   # FastAPI backend (multi-user)
 │   ├── app.py             # application factory + /login page
-│   ├── auth.py            # Google OAuth + JWT
+│   ├── auth.py            # Google OAuth + JWT + CSRF state
 │   ├── db.py              # DynamoDB persistence
+│   ├── groww_creds.py     # per-user Groww credential encryption + resolution
+│   ├── statement.py       # holdings statement (CSV/XLSX) parsing
 │   ├── streaming.py       # WebSocket chat adapter
-│   ├── background.py      # thread-pool job runner
+│   ├── background.py      # thread-pool job runner (heartbeats, timeouts)
+│   ├── ratelimit.py       # DynamoDB-backed cross-worker rate limits
+│   ├── logging_config.py  # JSON structured logging
 │   ├── models.py          # Pydantic request/response schemas
 │   └── routes/            # auth, portfolio, tools, chat, recommendations
+├── utils/
+│   └── ttl_cache.py       # bounded + expiring in-process cache
 ├── mcp/                   # FastMCP server exposing tools
 └── data/
     └── universe.csv       # static Nifty-universe candidate pool
@@ -321,7 +338,8 @@ pennywise/
 - [ ] Live AMFI category lookup instead of threshold-based mcap bucketing.
 - [ ] XIRR + dividend history (Groww publishes both via the portfolio API).
 - [ ] Optional Streamlit dashboard for the chat surface.
-- [ ] Per-user snapshot persistence in the API (currently uses the shared CLI snapshot).
+- [ ] SQS-backed job runner so the API can scale past one ECS task
+      (background jobs currently live in an in-process thread pool).
 
 ## License
 
