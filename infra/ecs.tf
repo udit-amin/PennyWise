@@ -28,7 +28,7 @@ resource "aws_security_group" "alb" {
 
 resource "aws_security_group" "service" {
   name        = "${local.name}-service"
-  description = "Fargate tasks — ingress only from the ALB"
+  description = "Fargate tasks - ingress only from the ALB"
   vpc_id      = aws_vpc.this.id
 
   ingress {
