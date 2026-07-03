@@ -23,19 +23,25 @@ dynamodb-local only.
 
 ## One-time bootstrap
 
-1. **State backend** — create the S3 bucket referenced in `versions.tf`
-   (`pennywise-tfstate`, versioned, encrypted). S3 native locking
-   (`use_lockfile`) needs no DynamoDB lock table.
+Full walkthrough (fresh AWS account, IAM Identity Center setup, Google
+Cloud Console): `docs/AWS_SETUP.md`. Summary:
 
-2. **Shared ECR repo**
+1. **State backend** — `scripts/bootstrap-aws.sh` creates the S3 bucket
+   referenced in `versions.tf` (`pennywise-tfstate`, versioned, encrypted,
+   TLS-only). S3 native locking (`use_lockfile`) needs no DynamoDB lock table.
+
+2. **Shared account-global resources** (ECR repo, GitHub OIDC role,
+   CloudTrail):
    ```bash
    cd infra/shared
    terraform init && terraform apply
    ```
-
-3. **GitHub OIDC role** — see `.github/workflows/`; CI assumes an IAM role via
-   OIDC (no static keys). Create the role with permissions for ECR push, ECS
-   update, and `iam:PassRole` on the task/execution roles.
+   Set the GitHub repo secret `AWS_DEPLOY_ROLE_ARN` to this apply's
+   `deploy_role_arn` output, and create the `production` GitHub Environment
+   with a required-reviewer rule (see `.github/workflows/`). No long-lived
+   IAM user access keys are used anywhere — CI assumes the `pennywise-deploy`
+   role via OIDC, scoped to exactly ECR push + ECS deploy + `iam:PassRole`
+   on this project's own task/execution roles.
 
 ## Deploy an environment
 
