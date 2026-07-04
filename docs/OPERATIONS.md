@@ -98,6 +98,37 @@ A task with a missing/empty secret fails `validate_auth_config()` or
 five are populated before rolling, specifically to catch this before it
 reaches a crash-loop.
 
+## Manual `terraform apply` against a live environment
+
+`terraform apply -var-file=env/<env>.tfvars` always requires an explicit
+`-var="image_tag=<sha>"` — `image_tag` has no default on purpose. Applying
+without it would silently register a task definition pointing at a `:latest`
+image tag, which doesn't exist (CI only ever pushes SHA-tagged images). The
+new task then fails to even pull its image — invisible to application logs,
+since the container process never starts — and the deployment circuit
+breaker (`infra/ecs.tf`) automatically rolls back to the last good revision.
+The apply itself reports success throughout, so this is easy to miss.
+
+Find the currently-running (working) tag first:
+
+```bash
+aws ecs describe-task-definition --task-definition <cluster-name> \
+  --query 'taskDefinition.containerDefinitions[0].image' --output text
+```
+
+Then also remember: the ECS service is configured to ignore task-definition
+changes from Terraform (so Terraform and CI/CD don't fight over deploys) —
+`apply` registers a new revision but does **not** roll the running service
+onto it. Either push anything to `main` (CI/CD's next deploy renders from
+the *latest* task definition, so it picks up whatever Terraform just
+registered) or force it immediately:
+
+```bash
+aws ecs update-service --cluster <cluster-name> --service <service-name> \
+  --task-definition <cluster-name> --force-new-deployment
+aws ecs wait services-stable --cluster <cluster-name> --service <service-name>
+```
+
 ## First-time table provisioning
 
 Terraform is the source of truth for the DynamoDB schema
