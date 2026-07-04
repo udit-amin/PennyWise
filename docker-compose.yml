@@ -28,5 +28,5 @@ services:
     volumes:
       - ./pennywise:/app/pennywise  # hot-reload during development
     command: >
-      uv run uvicorn pennywise.api.app:create_app
+      uvicorn pennywise.api.app:create_app
       --host 0.0.0.0 --port 8000 --factory --reload

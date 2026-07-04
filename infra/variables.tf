@@ -55,9 +55,15 @@ variable "use_fargate_spot" {
 }
 
 variable "image_tag" {
-  type        = string
-  default     = "latest"
-  description = "ECR image tag to deploy. CI sets this to the git SHA."
+  type = string
+  # No default, deliberately. CI always passes this explicitly (the git
+  # SHA it just built). A human running `terraform apply` by hand who
+  # forgets -var="image_tag=..." would otherwise silently regress the
+  # running service onto a "latest" tag that doesn't exist in ECR (CI only
+  # ever pushes SHA-tagged images) — the new task then fails to pull its
+  # image, invisibly to application logs, and the deployment circuit
+  # breaker rolls back. Better to fail the apply loudly and immediately.
+  description = "ECR image tag to deploy. CI sets this to the git SHA; always pass explicitly for manual applies."
 }
 
 # ── App config (non-secret) ───────────────────────────────────────────
