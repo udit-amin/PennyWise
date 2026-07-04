@@ -26,10 +26,30 @@ Both paths go through the `production` GitHub Environment's required-reviewer
 gate — nothing reaches prod without a manual approval click in the Actions UI.
 
 Every deploy runs `scripts/smoke.sh` against `API_URL` afterward (liveness,
-readiness, login page, auth actually enforced, request-id header). A failing
-smoke test triggers an automatic rollback to the task definition that was
-running before the deploy, and the workflow still fails — a bad release never
-sits reported as "succeeded."
+readiness, login page, auth actually enforced, request-id header, and that
+the Google OAuth redirect it builds carries a non-empty `redirect_uri` —
+added after a real incident where it silently came out blank when no custom
+domain was configured, which Google rejects outright). A failing smoke test
+triggers an automatic rollback to the task definition that was running
+before the deploy, and the workflow still fails — a bad release never sits
+reported as "succeeded."
+
+**What the automated smoke test deliberately does *not* cover** — these need
+a live identity provider, a real third-party brokerage account, or spend real
+Anthropic tokens, so they don't belong in a check that runs on every push:
+
+- Completing a real Google OAuth consent (sign in, land on `/login` with a JWT)
+- Linking a real Groww account (`POST /api/auth/groww-credentials`) or
+  uploading a real holdings statement (`POST /api/portfolio/upload`)
+- One real chat turn (`/api/chat/ws`) and one real recommendation run
+  (`POST /api/recommendations`, polled to completion)
+
+Run this manual pass once after standing up a new environment, and again
+before promoting to prod if the auth/portfolio/chat code paths changed —
+`README.md`'s "How to test it yourself" walkthrough has the exact steps
+(browser login, `/docs` for REST endpoints, a short WebSocket snippet for
+chat). This is a deliberate gap, not an oversight — write it down rather than
+assume someone will remember to check it.
 
 ## Rollback
 

@@ -53,11 +53,40 @@ expect_header() {
   echo "OK  $desc"
 }
 
+# Catches config bugs that produce a syntactically fine redirect to Google
+# but with a broken/empty payload (e.g. a Terraform expression that
+# collapses to "" when no custom domain is configured) — none of the unit
+# tests exercise the real deployed env-var substitution, and a blank
+# redirect_uri fails silently until a human clicks "Sign in with Google"
+# and hits Google's own invalid_request page. Doesn't complete a real
+# OAuth flow (needs live credentials, not appropriate for an automated
+# smoke test) — just verifies the request we send Google is well-formed.
+expect_oauth_redirect_valid() {
+  local location redirect_uri
+  # GET, not HEAD (-I): this route only registers GET, HEAD gets a 405. -D -
+  # dumps response headers to stdout without following the redirect (-L is
+  # NOT passed), which is what we want — inspect it, don't chase it.
+  location=$(curl -s -o /dev/null -D - "$URL/api/auth/google/start" | tr -d '\r' | grep -i '^location:' | sed -E 's/^[Ll]ocation: *//' || true)
+  if [ -z "$location" ]; then
+    fail "OAuth start (/api/auth/google/start) returned no redirect Location header"
+  fi
+  case "$location" in
+    https://accounts.google.com/*) ;;
+    *) fail "OAuth start redirected somewhere unexpected: $location" ;;
+  esac
+  redirect_uri=$(echo "$location" | grep -oE 'redirect_uri=[^&]*' | sed 's/redirect_uri=//')
+  if [ -z "$redirect_uri" ]; then
+    fail "OAuth redirect_uri sent to Google is empty — Google rejects this outright (invalid_request); check GOOGLE_REDIRECT_URI"
+  fi
+  echo "OK  OAuth redirect to Google carries a non-empty redirect_uri"
+}
+
 wait_ready
 expect_status GET  /health           200 "liveness probe"
 expect_status GET  /login            200 "login page renders"
 expect_status GET  /api/auth/me      401 "auth is enforced (no token -> 401)"
 expect_status POST /api/recommendations 401 "recommendations requires auth"
 expect_header /health x-request-id   "request-id middleware active"
+expect_oauth_redirect_valid
 
 echo "All smoke checks passed against $URL"
