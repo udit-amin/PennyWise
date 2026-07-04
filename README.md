@@ -231,6 +231,31 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the system design,
 and [`docs/AWS_SETUP.md`](docs/AWS_SETUP.md) for provisioning a fresh AWS
 account.
 
+### How to test it yourself against a deployed environment
+
+There's no separate frontend yet, so the fastest way to exercise a live
+deployment as a real user:
+
+1. **Sign in.** Open `<API_URL>/login` in a browser, click "Sign in with
+   Google." You'll land on a page showing a PennyWise JWT — copy it.
+2. **Try REST endpoints interactively.** Go to `<API_URL>/docs`, click
+   **Authorize**, paste the JWT. Every endpoint now has a **Try it out**
+   button — link Groww or upload a statement, then check holdings/risk,
+   then kick off a recommendation job and poll it.
+3. **Chat is a WebSocket**, which the docs UI can't drive. Quickest
+   zero-install way — open your browser's dev console (F12) on any tab:
+   ```js
+   const ws = new WebSocket("<API_URL with ws:// or wss://>/api/chat/ws");
+   ws.onmessage = (e) => console.log(JSON.parse(e.data));
+   ws.onopen = () => ws.send(JSON.stringify({type: "auth", token: "PASTE_JWT_HERE"}));
+   // once {"type":"auth_ok"} logs, send a turn:
+   ws.send(JSON.stringify({type: "message", text: "am I over-concentrated?"}));
+   ```
+
+This is the manual check that fills the gap the automated smoke test
+deliberately leaves — see `docs/OPERATIONS.md`'s Deploy section for exactly
+what's automated vs. what needs a human here and why.
+
 ## MCP integration (optional)
 
 Register PennyWise alongside Groww's official MCP server in

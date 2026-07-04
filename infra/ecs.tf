@@ -91,13 +91,20 @@ resource "aws_ecs_task_definition" "app" {
       { name = "CORS_ORIGINS", value = var.cors_origins },
       { name = "PENNYWISE_LLM_MODEL", value = var.llm_model },
       { name = "PENNYWISE_REASONING_EFFORT", value = var.reasoning_effort },
-      { name = "GOOGLE_REDIRECT_URI", value = local.enable_dns ? "https://${var.domain_name}/api/auth/google/callback" : "" },
-      # OAuth redirect allowlist — the registered API callback plus the
-      # frontend callback derived from the first CORS origin.
-      { name = "PENNYWISE_ALLOWED_REDIRECT_URIS", value = local.enable_dns ? join(",", [
+      # Falls back to the ALB's own DNS name over plain HTTP when no custom
+      # domain is configured yet (bootstrap). An EMPTY value here silently
+      # breaks Google login entirely (Google rejects a blank redirect_uri
+      # outright) — always resolve to *something* Google can round-trip to.
+      { name = "GOOGLE_REDIRECT_URI", value = local.enable_dns ? "https://${var.domain_name}/api/auth/google/callback" : "http://${aws_lb.this.dns_name}/api/auth/google/callback" },
+      # OAuth redirect allowlist — the registered API callback plus (once a
+      # real domain exists) the frontend callback derived from the first
+      # CORS origin.
+      { name = "PENNYWISE_ALLOWED_REDIRECT_URIS", value = join(",", local.enable_dns ? [
         "https://${var.domain_name}/api/auth/google/callback",
         "${split(",", var.cors_origins)[0]}/auth/callback",
-      ]) : "" },
+        ] : [
+        "http://${aws_lb.this.dns_name}/api/auth/google/callback",
+      ]) },
     ]
 
     secrets = [for k, arn in local.container_secrets : { name = k, valueFrom = arn }]
