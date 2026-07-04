@@ -31,6 +31,25 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 _AUTH_RATE_LIMIT = "10/minute"
 _STATE_COOKIE = "pw_oauth_state"
+
+
+def _is_https(request: Request) -> bool:
+    """Whether *this* request was actually delivered over HTTPS.
+
+    Not the same question as "is this a deployed environment" — the ALB
+    terminates TLS, so the container always sees plain HTTP on
+    request.url.scheme regardless of what the browser used. Trust
+    X-Forwarded-Proto instead (set by the ALB; the service's security
+    group only accepts ingress from the ALB, so this can't be spoofed by
+    a client bypassing it). Marking the cookie Secure when the request
+    was actually plain HTTP (e.g. staging before a custom domain exists)
+    makes the browser silently refuse to store it at all — every login
+    would fail with a "session mismatch" and no cookie ever visible.
+    """
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    if forwarded_proto:
+        return forwarded_proto.lower() == "https"
+    return request.url.scheme == "https"
 _GOOGLE_REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI",
     "http://localhost:8000/api/auth/google/callback",
@@ -155,7 +174,6 @@ async def google_start(request: Request) -> RedirectResponse:
             status_code=500,
             detail="GOOGLE_CLIENT_ID is not configured on this server.",
         )
-    from pennywise import config
 
     state = create_oauth_state()
     response = RedirectResponse(google_auth_url(_GOOGLE_REDIRECT_URI, state), status_code=302)
@@ -165,7 +183,7 @@ async def google_start(request: Request) -> RedirectResponse:
         max_age=600,
         httponly=True,
         samesite="lax",
-        secure=config.load().is_prod_like,
+        secure=_is_https(request),
     )
     return response
 

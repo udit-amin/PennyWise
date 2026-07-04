@@ -198,3 +198,52 @@ def test_browser_callback_happy_path(app_client, fake_db, google_configured, fak
     assert resp.status_code == 200
     assert "Signed in!" in resp.text
     assert any(u["email"] == "oauth@example.com" for u in fake_db.users.values())
+
+
+# ── state cookie Secure flag ───────────────────────────────────────────
+# Regression coverage for a real incident: the cookie's Secure attribute
+# must follow whether *this request* was actually HTTPS (via the ALB's
+# X-Forwarded-Proto — the container itself always sees plain HTTP), not
+# the environment tier. Staging is a real deployed env but had no custom
+# domain yet, so marking the cookie Secure there made every browser
+# silently refuse to store it — every login failed with "session
+# mismatch" and no cookie ever visible to debug.
+
+
+def test_is_https_pure_unit(monkeypatch):
+    from starlette.requests import Request
+
+    from pennywise.api.routes.auth import _is_https
+
+    def make_request(headers=None, scheme="http"):
+        scope = {
+            "type": "http",
+            "scheme": scheme,
+            "headers": [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()],
+            "server": ("testserver", 80),
+            "path": "/",
+            "query_string": b"",
+        }
+        return Request(scope)
+
+    assert _is_https(make_request()) is False
+    assert _is_https(make_request(headers={"x-forwarded-proto": "https"})) is True
+    assert _is_https(make_request(headers={"x-forwarded-proto": "http"})) is False
+    assert _is_https(make_request(scheme="https")) is True
+
+
+def test_start_cookie_not_secure_over_plain_http(app_client, google_configured):
+    resp = app_client.get("/api/auth/google/start", follow_redirects=False)
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert "pw_oauth_state" in set_cookie
+    assert "secure" not in set_cookie.lower()
+
+
+def test_start_cookie_secure_when_alb_forwarded_https(app_client, google_configured):
+    resp = app_client.get(
+        "/api/auth/google/start",
+        follow_redirects=False,
+        headers={"x-forwarded-proto": "https"},
+    )
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert "secure" in set_cookie.lower()

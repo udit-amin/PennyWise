@@ -81,6 +81,31 @@ expect_oauth_redirect_valid() {
   echo "OK  OAuth redirect to Google carries a non-empty redirect_uri"
 }
 
+# Catches a second, related config bug: the OAuth state cookie's Secure
+# attribute must match whether *this URL* is actually HTTPS. The ALB always
+# sets X-Forwarded-Proto to reflect the real client connection, so this
+# checks the same thing a real browser would enforce — mark it Secure over
+# plain HTTP and every browser silently refuses to store it, so every login
+# fails with a "session mismatch" and no cookie ever visible to debug (this
+# happened in production; see docs/OPERATIONS.md).
+expect_oauth_state_cookie_secure_matches_scheme() {
+  local set_cookie has_secure=0
+  set_cookie=$(curl -s -o /dev/null -D - "$URL/api/auth/google/start" | tr -d '\r' | grep -i '^set-cookie:' | grep -i 'pw_oauth_state' || true)
+  if [ -z "$set_cookie" ]; then
+    fail "OAuth start did not set the pw_oauth_state cookie"
+  fi
+  echo "$set_cookie" | grep -qi 'secure' && has_secure=1
+  case "$URL" in
+    https://*)
+      [ "$has_secure" = "1" ] || fail "OAuth state cookie is missing Secure even though this URL is HTTPS"
+      ;;
+    http://*)
+      [ "$has_secure" = "0" ] || fail "OAuth state cookie is marked Secure even though this URL is plain HTTP — browsers silently refuse to store it, breaking every login"
+      ;;
+  esac
+  echo "OK  OAuth state cookie's Secure attribute matches the URL scheme"
+}
+
 wait_ready
 expect_status GET  /health           200 "liveness probe"
 expect_status GET  /login            200 "login page renders"
@@ -88,5 +113,6 @@ expect_status GET  /api/auth/me      401 "auth is enforced (no token -> 401)"
 expect_status POST /api/recommendations 401 "recommendations requires auth"
 expect_header /health x-request-id   "request-id middleware active"
 expect_oauth_redirect_valid
+expect_oauth_state_cookie_secure_matches_scheme
 
 echo "All smoke checks passed against $URL"
